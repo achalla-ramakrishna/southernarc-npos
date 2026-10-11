@@ -29,6 +29,9 @@ release (discovery O4).
 | Secrets | HashiCorp Vault |
 | Testing | JUnit 5, Testcontainers, Pact, Playwright, k6 |
 
+Installations and releases across Northern Arc and bank environments are governed by
+[ADR-0011](0011-installation-and-release-management.md).
+
 Workflow (Temporal vs Camunda 8) and rules (DMN on Apache KIE) are decided in
 their own ADRs with Modules 4 and 2.
 

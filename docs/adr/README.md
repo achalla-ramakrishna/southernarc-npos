@@ -18,5 +18,6 @@ Status values: **Proposed** (under review), **Accepted**, **Superseded by ADR-nn
 | [0008](0008-limit-definitions-vs-utilisation.md) | Limit definitions in Module 1, utilisation in Module 7 | Module 1 | Proposed |
 | [0009](0009-partner-credentials-in-keycloak.md) | Partner credentials in Keycloak and the gateway; no secrets in our database | Module 1 | Proposed |
 | [0010](0010-configuration-packages.md) | Configuration packages for promotion between environments | Module 1 | Proposed |
+| [0011](0011-installation-and-release-management.md) | Installation and release management | Platform | Proposed |
 
 Template: Context → Decision → Alternatives considered → Consequences.
