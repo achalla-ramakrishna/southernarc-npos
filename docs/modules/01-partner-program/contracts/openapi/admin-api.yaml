@@ -1,0 +1,2006 @@
+openapi: 3.1.0
+info:
+  title: nPOS partner-config admin API
+  version: 1.0.0-draft
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: |
+    Back-office API for Module 1, Partner and Program Management
+    (UC-01.01 to UC-01.07, UC-13.02).
+
+    Every change follows the same pattern (see ../README.md):
+    create a draft version → edit it (If-Match) → validate → submit its change
+    request → approvers decide → on final approval the version is scheduled or
+    activated and an event is published.
+
+    The tenant always comes from the caller's token. `x-roles` lists who may
+    call each operation; the service enforces it (NFR-UP01-S02).
+servers:
+  - url: https://{host}/admin/partner-config/v1
+    variables:
+      host: { default: npos.example }
+security:
+  - oidc: []
+tags:
+  - { name: Tenants, description: UC-13.02 Onboard co-lender tenant }
+  - { name: Partners, description: UC-01.01 Onboard originator partner }
+  - { name: Documents, description: Document upload via the document service }
+  - { name: Programs, description: UC-01.02 Configure product program }
+  - { name: Co-lending, description: UC-01.03 Configure co-lending arrangement }
+  - { name: Limits and DLG, description: UC-01.04 Configure DLG and exposure limits }
+  - { name: Commercials, description: UC-01.06 Configure partner commercials }
+  - { name: Credentials, description: UC-01.05 Manage partner API credentials }
+  - { name: Suspension, description: UC-01.07 Suspend or offboard partner }
+  - { name: Change requests, description: Maker-checker approvals and work lists (ADR-0005) }
+  - { name: Readiness, description: Go-live readiness (BR-01.01-06) }
+  - { name: Reference data, description: 'Checklists, product master, approval matrix, regulatory parameters' }
+  - { name: Packages, description: Configuration packages between environments (ADR-0010) }
+  - { name: Audit, description: Audit trail and timelines (NFR-UP01-AU01) }
+
+paths:
+  # ======================= Tenants =======================
+  /tenants:
+    get:
+      tags: [Tenants]
+      operationId: listTenants
+      summary: List tenants on this installation
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/Limit'
+        - $ref: './common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Tenants.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TenantPage' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+    post:
+      tags: [Tenants]
+      operationId: createTenant
+      summary: Onboard a co-lender tenant (UC-13.02)
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TenantCreate' }
+      responses:
+        '201':
+          description: Tenant created in PROVISIONING; becomes ACTIVE when identity realm, roles and integrations are set up.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /tenants/{tenantId}:
+    get:
+      tags: [Tenants]
+      operationId: getTenant
+      summary: Get a tenant
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Tenant.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Partners =======================
+  /partners:
+    get:
+      tags: [Partners]
+      operationId: listPartners
+      summary: List partners
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, CREDIT_POLICY_MANAGER, FINANCE_EXECUTIVE, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - { name: status, in: query, schema: { $ref: './common.yaml#/components/schemas/PartnerStatus' } }
+        - { name: partnerType, in: query, schema: { $ref: './common.yaml#/components/schemas/PartnerType' } }
+        - { name: q, in: query, description: 'Search by name, PTR code, PAN, CIN or GSTIN.', schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/Limit'
+        - $ref: './common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Partners.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PartnerPage' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [Partners]
+      operationId: createPartner
+      summary: Start onboarding a partner (UC-01.01 steps 1–4)
+      description: |
+        Creates the partner in DRAFT with profile version 1 as a draft, and an
+        ONBOARD_PARTNER change request in DRAFT. Fails if PAN, CIN or GSTIN
+        already belongs to a partner in this tenant (BR-01.01-01, alt. flow A1).
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PartnerCreate' }
+      responses:
+        '201':
+          description: Draft partner created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/duplicate-check:
+    get:
+      tags: [Partners]
+      operationId: checkPartnerDuplicates
+      summary: Find partners with the same PAN, CIN/LLPIN or GSTIN (UC-01.01 step 6)
+      description: Responds within 1 s (NFR-UP01-P02). Returns matches in the caller's tenant only.
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER]
+      parameters:
+        - { name: pan, in: query, schema: { type: string } }
+        - { name: cin, in: query, schema: { type: string } }
+        - { name: llpin, in: query, schema: { type: string } }
+        - { name: gstin, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Matches (empty when none).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matches:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        partnerId: { type: string }
+                        partnerCode: { type: [string, 'null'] }
+                        displayName: { type: string }
+                        status: { $ref: './common.yaml#/components/schemas/PartnerStatus' }
+                        matchedOn: { type: array, items: { type: string, enum: [PAN, CIN, LLPIN, GSTIN] } }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}:
+    get:
+      tags: [Partners]
+      operationId: getPartner
+      summary: Get a partner
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, CREDIT_POLICY_MANAGER, FINANCE_EXECUTIVE, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+      responses:
+        '200':
+          description: Partner.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/Partner' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/profile-versions:
+    get:
+      tags: [Partners]
+      operationId: listPartnerProfileVersions
+      summary: List profile versions
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+      responses:
+        '200':
+          description: Versions, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: './common.yaml#/components/schemas/PartnerProfileVersion' } }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [Partners]
+      operationId: createPartnerProfileDraft
+      summary: Start a profile change (new draft copied from a version)
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewDraft' }
+      responses:
+        '201':
+          description: Draft created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/profile-versions/{version}:
+    get:
+      tags: [Partners]
+      operationId: getPartnerProfileVersion
+      summary: Get a profile version
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: Profile version.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/PartnerProfileVersion' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    put:
+      tags: [Partners]
+      operationId: updatePartnerProfileDraft
+      summary: Save a profile draft (UC-01.01 steps 5–13; alt. flow A2 save draft)
+      description: Partial content is accepted; completeness is checked on submission.
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/Version'
+        - $ref: './common.yaml#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PartnerProfileDraftUpdate' }
+      responses:
+        '200':
+          description: Saved.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/PartnerProfileVersion' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '412': { $ref: './common.yaml#/components/responses/PreconditionFailed' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/profile-versions/{version}/validation:
+    post:
+      tags: [Partners]
+      operationId: validatePartnerProfileDraft
+      summary: Validate a profile draft without submitting
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: Validation result listing every missing field and document (alt. flow A5).
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ValidationResult' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/profile-versions/{fromVersion}/diff/{toVersion}:
+    get:
+      tags: [Partners]
+      operationId: diffPartnerProfileVersions
+      summary: Compare two profile versions
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - { name: fromVersion, in: path, required: true, schema: { type: integer } }
+        - { name: toVersion, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Differences.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/VersionDiff' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Documents =======================
+  /partners/{partnerId}/document-uploads:
+    post:
+      tags: [Documents]
+      operationId: requestPartnerDocumentUpload
+      summary: Get a pre-signed URL to upload a partner document to the DMS
+      description: |
+        The browser uploads the file directly to the document service with the
+        returned URL (PDF, JPG or PNG, up to 20 MB), then adds the returned
+        DocumentRef to the draft's `documents` list. Module 1 stores only the
+        reference (NFR-UP01-D02).
+      x-roles: [PARTNER_MANAGER, FINANCE_EXECUTIVE]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [documentType, fileName, contentType, sizeBytes]
+              properties:
+                documentType: { type: string }
+                fileName: { type: string }
+                contentType: { type: string, enum: [application/pdf, image/jpeg, image/png] }
+                sizeBytes: { type: integer, maximum: 20971520 }
+                sha256: { type: string }
+      responses:
+        '201':
+          description: Upload slot created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document: { $ref: './common.yaml#/components/schemas/DocumentRef' }
+                  uploadUrl: { type: string, format: uri }
+                  uploadUrlExpiresAt: { type: string, format: date-time }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '503': { $ref: './common.yaml#/components/responses/ServiceUnavailable' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Programs =======================
+  /partners/{partnerId}/programs:
+    get:
+      tags: [Programs]
+      operationId: listPartnerPrograms
+      summary: List a partner's programs
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER, COMPLIANCE_OFFICER, FINANCE_EXECUTIVE, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - { name: includeRetired, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: Programs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: './common.yaml#/components/schemas/Program' } }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [Programs]
+      operationId: createProgram
+      summary: Create a program, optionally cloned from another (UC-01.02 step 1–3, alt. flow A1)
+      description: |
+        Creates the program and version 1 as a draft. With `cloneFrom`, every
+        setting is copied from the given program version, which may belong to
+        another partner in the same tenant. This replaces copying code per
+        partner.
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProgramCreate' }
+      responses:
+        '201':
+          description: Program and draft version created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /programs/{programId}:
+    get:
+      tags: [Programs]
+      operationId: getProgram
+      summary: Get a program
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER, COMPLIANCE_OFFICER, FINANCE_EXECUTIVE, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+      responses:
+        '200':
+          description: Program.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/Program' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /programs/{programId}/versions:
+    get:
+      tags: [Programs]
+      operationId: listProgramVersions
+      summary: List program versions
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER, COMPLIANCE_OFFICER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+      responses:
+        '200':
+          description: Versions, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: './common.yaml#/components/schemas/ProgramVersion' } }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [Programs]
+      operationId: createProgramDraft
+      summary: Start a new version of a program (alt. flow A2), or a rollback
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewDraft' }
+      responses:
+        '201':
+          description: Draft created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /programs/{programId}/versions/{version}:
+    get:
+      tags: [Programs]
+      operationId: getProgramVersion
+      summary: Get a program version
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER, COMPLIANCE_OFFICER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: Program version.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ProgramVersion' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    put:
+      tags: [Programs]
+      operationId: updateProgramDraft
+      summary: Save a program draft (UC-01.02 steps 3–10)
+      description: The credit policy manager may set `links.ruleSet` on a version pending their approval (step 14).
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+        - $ref: './common.yaml#/components/parameters/Version'
+        - $ref: './common.yaml#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProgramDraftUpdate' }
+      responses:
+        '200':
+          description: Saved.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ProgramVersion' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '412': { $ref: './common.yaml#/components/responses/PreconditionFailed' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /programs/{programId}/versions/{version}/validation:
+    post:
+      tags: [Programs]
+      operationId: validateProgramDraft
+      summary: Validate a program draft and generate a sample KFS (UC-01.02 step 11)
+      description: Runs BR-01.02-01 to -07 and invariants G1–G9; responds within 5 s (NFR-UP01-P04).
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: Validation result with sample KFS and repayment schedule references.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ValidationResult' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /programs/{programId}/versions/{fromVersion}/diff/{toVersion}:
+    get:
+      tags: [Programs]
+      operationId: diffProgramVersions
+      summary: Compare two program versions
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER, COMPLIANCE_OFFICER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+        - { name: fromVersion, in: path, required: true, schema: { type: integer } }
+        - { name: toVersion, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Differences.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/VersionDiff' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /programs/{programId}/retirement:
+    post:
+      tags: [Programs]
+      operationId: retireProgram
+      summary: Retire a program from an end date (UC-01.02 alt. flow A6)
+      description: Creates a RETIRE_PROGRAM change request. In-flight applications finish on their version.
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [effectiveFrom, reason]
+              properties:
+                effectiveFrom: { type: string, format: date-time }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Change request created (DRAFT).
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ChangeRequest' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Co-lending =======================
+  /colending-arrangements:
+    get:
+      tags: [Co-lending]
+      operationId: listArrangements
+      summary: List co-lending arrangements visible to the caller's tenant
+      description: Includes arrangements owned by the tenant and those where it is the co-lender party (ADR-0003).
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER, FINANCE_EXECUTIVE, COMPLIANCE_OFFICER, CO_LENDER_USER, AUDITOR]
+      parameters:
+        - { name: partnerId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: './common.yaml#/components/schemas/VersionStatus' } }
+        - $ref: './common.yaml#/components/parameters/Limit'
+        - $ref: './common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Arrangements.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: './common.yaml#/components/schemas/Arrangement' } }
+                  nextCursor: { type: [string, 'null'] }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [Co-lending]
+      operationId: createArrangement
+      summary: Create a co-lending arrangement (UC-01.03 steps 1–2)
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ArrangementCreate' }
+      responses:
+        '201':
+          description: Arrangement and draft version 1 created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /colending-arrangements/{arrangementId}:
+    get:
+      tags: [Co-lending]
+      operationId: getArrangement
+      summary: Get an arrangement
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER, FINANCE_EXECUTIVE, COMPLIANCE_OFFICER, CO_LENDER_USER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ArrangementId'
+      responses:
+        '200':
+          description: Arrangement.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/Arrangement' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /colending-arrangements/{arrangementId}/versions:
+    post:
+      tags: [Co-lending]
+      operationId: createArrangementDraft
+      summary: Amend an arrangement (alt. flow A3) or roll back
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ArrangementId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewDraft' }
+      responses:
+        '201':
+          description: Draft created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /colending-arrangements/{arrangementId}/versions/{version}:
+    get:
+      tags: [Co-lending]
+      operationId: getArrangementVersion
+      summary: Get an arrangement version
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER, FINANCE_EXECUTIVE, COMPLIANCE_OFFICER, CO_LENDER_USER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ArrangementId'
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: Arrangement version.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ArrangementVersion' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    put:
+      tags: [Co-lending]
+      operationId: updateArrangementDraft
+      summary: Save an arrangement draft (UC-01.03 steps 3–11)
+      description: The credit policy manager maps both lenders' rule sets (step 8) on the same draft.
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ArrangementId'
+        - $ref: './common.yaml#/components/parameters/Version'
+        - $ref: './common.yaml#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ArrangementDraftUpdate' }
+      responses:
+        '200':
+          description: Saved.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ArrangementVersion' }
+        '412': { $ref: './common.yaml#/components/responses/PreconditionFailed' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /colending-arrangements/{arrangementId}/versions/{version}/validation:
+    post:
+      tags: [Co-lending]
+      operationId: validateArrangementDraft
+      summary: Validate an arrangement draft (invariants C1–C4)
+      x-roles: [PARTNER_MANAGER, CREDIT_POLICY_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ArrangementId'
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: Validation result.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ValidationResult' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /colending-arrangements/{arrangementId}/versions/{version}/verification:
+    post:
+      tags: [Co-lending]
+      operationId: retryArrangementVerification
+      summary: Retry escrow and co-lender core verification (UC-01.03 exception flows E1, E2)
+      x-roles: [PARTNER_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ArrangementId'
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '202':
+          description: Verification started; the version moves to ACTIVE when both checks pass.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ArrangementVersion' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /colending-arrangements/{arrangementId}/suspension:
+    post:
+      tags: [Co-lending]
+      operationId: suspendArrangement
+      summary: Suspend or reinstate an arrangement (UC-01.03 alt. flow A4)
+      x-roles: [PARTNER_MANAGER, CO_LENDER_USER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ArrangementId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, reason]
+              properties:
+                action: { type: string, enum: [SUSPEND, REINSTATE] }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Change request created.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ChangeRequest' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Limits and DLG =======================
+  /partners/{partnerId}/limit-sets:
+    get:
+      tags: [Limits and DLG]
+      operationId: listLimitSets
+      summary: List a partner's limit sets
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, FINANCE_EXECUTIVE, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+      responses:
+        '200':
+          description: Limit sets.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: './common.yaml#/components/schemas/LimitSet' } }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [Limits and DLG]
+      operationId: createLimitSet
+      summary: Create a limit set with draft version 1 (UC-01.04 step 4)
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { $ref: './common.yaml#/components/schemas/LimitSetContent' }
+      responses:
+        '201':
+          description: Draft created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /limit-sets/{limitSetId}/versions:
+    post:
+      tags: [Limits and DLG]
+      operationId: createLimitSetDraft
+      summary: Change limits, add a temporary cap (alt. flows A3, A4) or roll back
+      description: The approval matrix routes decreases to Compliance only and increases through the full chain.
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - { name: limitSetId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewDraft' }
+      responses:
+        '201':
+          description: Draft created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /limit-sets/{limitSetId}/versions/{version}:
+    get:
+      tags: [Limits and DLG]
+      operationId: getLimitSetVersion
+      summary: Get a limit set version
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, FINANCE_EXECUTIVE, AUDITOR]
+      parameters:
+        - { name: limitSetId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: Limit set version.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/LimitSetVersion' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    put:
+      tags: [Limits and DLG]
+      operationId: updateLimitSetDraft
+      summary: Save a limit set draft
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - { name: limitSetId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/Version'
+        - $ref: './common.yaml#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                effectiveFrom: { type: string, format: date-time }
+                content: { $ref: './common.yaml#/components/schemas/LimitSetContent' }
+      responses:
+        '200':
+          description: Saved.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/LimitSetVersion' }
+        '412': { $ref: './common.yaml#/components/responses/PreconditionFailed' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/dlg-covers:
+    post:
+      tags: [Limits and DLG]
+      operationId: createDlgCover
+      summary: Record DLG terms as draft version 1 (UC-01.04 steps 2–3)
+      description: Rejected with DLG_ABOVE_REGULATORY_CAP when the cover exceeds the cap (BR-01.04-01).
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { $ref: './common.yaml#/components/schemas/DlgCoverContent' }
+      responses:
+        '201':
+          description: Draft created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /dlg-covers/{dlgCoverId}/versions/{version}:
+    get:
+      tags: [Limits and DLG]
+      operationId: getDlgCoverVersion
+      summary: Get a DLG cover version
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, FINANCE_EXECUTIVE, AUDITOR]
+      parameters:
+        - { name: dlgCoverId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: DLG cover version.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DlgCoverVersion' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    put:
+      tags: [Limits and DLG]
+      operationId: updateDlgCoverDraft
+      summary: Save a DLG cover draft
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - { name: dlgCoverId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/Version'
+        - $ref: './common.yaml#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                effectiveFrom: { type: string, format: date-time }
+                content: { $ref: './common.yaml#/components/schemas/DlgCoverContent' }
+      responses:
+        '200':
+          description: Saved.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DlgCoverVersion' }
+        '412': { $ref: './common.yaml#/components/responses/PreconditionFailed' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /dlg-covers/{dlgCoverId}/instruments:
+    post:
+      tags: [Limits and DLG]
+      operationId: recordDlgInstrument
+      summary: Record the DLG instrument (UC-01.04 step 7)
+      x-roles: [FINANCE_EXECUTIVE]
+      parameters:
+        - { name: dlgCoverId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './common.yaml#/components/schemas/DlgInstrument' }
+      responses:
+        '201':
+          description: Instrument recorded (RECORDED).
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DlgInstrument' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /dlg-instruments/{instrumentId}/verification:
+    post:
+      tags: [Limits and DLG]
+      operationId: verifyDlgInstrument
+      summary: Confirm receipt of the instrument, or mark it not verified (UC-01.04 step 8, E1)
+      description: This is the Finance approval step of the DLG change request; the verifier cannot be its maker.
+      x-roles: [FINANCE_EXECUTIVE]
+      parameters:
+        - { name: instrumentId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [result]
+              properties:
+                result: { type: string, enum: [VERIFIED, NOT_VERIFIED] }
+                reason: { type: string, description: Mandatory when NOT_VERIFIED. }
+      responses:
+        '200':
+          description: Instrument updated.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DlgInstrument' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Commercials =======================
+  /partners/{partnerId}/commercial-schedules:
+    post:
+      tags: [Commercials]
+      operationId: createCommercialSchedule
+      summary: Create commercials as draft version 1 (UC-01.06 steps 1–4)
+      description: ERP vendor and customer codes are looked up by PAN and GSTIN; if the ERP is down the draft still saves (NFR-UP01-I04).
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { $ref: './common.yaml#/components/schemas/CommercialContent' }
+      responses:
+        '201':
+          description: Draft created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /commercial-schedules/{scheduleId}/versions:
+    post:
+      tags: [Commercials]
+      operationId: createCommercialDraft
+      summary: Change commercials with a future effective date (alt. flow A1) or roll back
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewDraft' }
+      responses:
+        '201':
+          description: Draft created.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /commercial-schedules/{scheduleId}/versions/{version}:
+    get:
+      tags: [Commercials]
+      operationId: getCommercialVersion
+      summary: Get a commercials version
+      x-roles: [PARTNER_MANAGER, FINANCE_EXECUTIVE, AUDITOR]
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/Version'
+      responses:
+        '200':
+          description: Commercials version.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/CommercialVersion' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    put:
+      tags: [Commercials]
+      operationId: updateCommercialDraft
+      summary: Save a commercials draft
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/Version'
+        - $ref: './common.yaml#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                effectiveFrom: { type: string, format: date-time }
+                content: { $ref: './common.yaml#/components/schemas/CommercialContent' }
+      responses:
+        '200':
+          description: Saved.
+          headers:
+            ETag: { $ref: './common.yaml#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/CommercialVersion' }
+        '412': { $ref: './common.yaml#/components/responses/PreconditionFailed' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Credentials =======================
+  /partners/{partnerId}/api-clients:
+    get:
+      tags: [Credentials]
+      operationId: listApiClients
+      summary: List a partner's API clients (metadata only)
+      x-roles: [PLATFORM_ADMIN, PARTNER_MANAGER, AUDITOR]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+      responses:
+        '200':
+          description: API clients.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: './common.yaml#/components/schemas/ApiClient' } }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [Credentials]
+      operationId: requestApiClient
+      summary: Request credentials for an environment (UC-01.05 steps 1–3)
+      description: |
+        Creates the client in REQUESTED and emails the partner's technical
+        contact a one-time link to submit certificate, IPs and webhook URL.
+        For PRODUCTION, fails with PRODUCTION_CREDENTIALS_NOT_READY unless all
+        other go-live checks pass (BR-01.05-04).
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment, scopes, rateLimits]
+              properties:
+                environment: { $ref: './common.yaml#/components/schemas/Environment' }
+                scopes: { type: array, items: { type: string } }
+                rateLimits:
+                  type: object
+                  required: [perSecond, perDay]
+                  properties:
+                    perSecond: { type: integer, minimum: 1 }
+                    perDay: { type: integer, minimum: 1 }
+      responses:
+        '201':
+          description: Request created.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ApiClient' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /api-clients/{apiClientId}:
+    get:
+      tags: [Credentials]
+      operationId: getApiClient
+      summary: Get an API client
+      x-roles: [PLATFORM_ADMIN, PARTNER_MANAGER, AUDITOR]
+      parameters:
+        - { name: apiClientId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: API client.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ApiClient' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    patch:
+      tags: [Credentials]
+      operationId: updateApiClient
+      summary: Change scopes, rate limits, IP list or webhook URL (UC-01.05 alt. flow A3)
+      description: A changed webhook URL is re-tested; delivery is UNVERIFIED until the partner acknowledges.
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - { name: apiClientId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              properties:
+                scopes: { type: array, items: { type: string } }
+                rateLimits:
+                  type: object
+                  properties:
+                    perSecond: { type: integer, minimum: 1 }
+                    perDay: { type: integer, minimum: 1 }
+                ipAllowList: { type: array, items: { type: string } }
+                webhookUrl: { type: string, format: uri }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ApiClient' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /api-clients/{apiClientId}/rotation:
+    post:
+      tags: [Credentials]
+      operationId: rotateApiClient
+      summary: Rotate the secret and/or certificate (UC-01.05 alt. flow A1)
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - { name: apiClientId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rotate]
+              properties:
+                rotate: { type: array, items: { type: string, enum: [SECRET, CERTIFICATE, WEBHOOK_SIGNING_KEY] } }
+                overlapDays: { type: integer, minimum: 0, maximum: 7, default: 7 }
+      responses:
+        '202':
+          description: Rotation started (ROTATING).
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ApiClient' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /api-clients/{apiClientId}/revocation:
+    post:
+      tags: [Credentials]
+      operationId: revokeApiClient
+      summary: Revoke credentials immediately (UC-01.05 alt. flow A2)
+      description: The gateway rejects calls within 60 s (NFR-UP01-P10). Published on the priority topic.
+      x-roles: [PLATFORM_ADMIN, COMPLIANCE_OFFICER]
+      parameters:
+        - { name: apiClientId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ApiClient' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partner-intake/credential-requests/{token}:
+    post:
+      tags: [Credentials]
+      operationId: submitCredentialDetails
+      summary: Partner submits certificate, IPs and webhook URL (UC-01.05 step 4)
+      description: |
+        Partner-facing; served at /partner/v1/credential-requests/{token}. The
+        one-time token from the emailed link is the only authentication. After
+        submission the service creates the client in Keycloak, sends a signed
+        test webhook, and delivers the client secret by a separate one-time link.
+      security: []
+      x-roles: [PARTNER_TECHNICAL_CONTACT]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [certificatePem, ipAllowList, webhookUrl]
+              properties:
+                certificatePem: { type: string, description: Public certificate or CSR in PEM. }
+                ipAllowList: { type: array, items: { type: string } }
+                webhookUrl: { type: string, format: uri }
+      responses:
+        '202':
+          description: Details accepted; issuing in progress.
+        '410':
+          description: Link expired or already used.
+          content:
+            application/problem+json:
+              schema: { $ref: './common.yaml#/components/schemas/Problem' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+
+  # ======================= Suspension =======================
+  /partners/{partnerId}/impact:
+    get:
+      tags: [Suspension]
+      operationId: getPartnerImpact
+      summary: Impact of suspending a partner (UC-01.07 step 3)
+      description: |
+        Aggregates in-flight applications by stage, undisbursed sanctions,
+        active loans and DLG balance from other modules' read APIs. Responds
+        within 5 s (NFR-UP01-P05). Counts from a module that is not yet
+        available are returned as null.
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - { name: programId, in: query, description: Limit to programs (repeatable)., schema: { type: array, items: { type: string } }, style: form, explode: true }
+      responses:
+        '200':
+          description: Impact summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inFlightApplicationsByStage: { type: [object, 'null'], additionalProperties: { type: integer } }
+                  sanctionedNotDisbursed: { type: [integer, 'null'] }
+                  activeLoans: { type: [integer, 'null'] }
+                  dlgBalance: { oneOf: [ { $ref: './common.yaml#/components/schemas/Money' }, { type: 'null' } ] }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/suspension-orders:
+    post:
+      tags: [Suspension]
+      operationId: createSuspensionOrder
+      summary: Suspend, reinstate or offboard a partner (UC-01.07)
+      description: |
+        Creates the matching change request (SUSPEND_PARTNER, REINSTATE_PARTNER
+        or OFFBOARD_PARTNER) and submits it. With `emergency: true` (Compliance
+        only, alt. flow A1) the suspension applies immediately and approval is
+        recorded afterwards.
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SuspensionOrderCreate' }
+      responses:
+        '201':
+          description: Change request created and submitted.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ChangeRequest' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+  # ======================= Change requests =======================
+  /change-requests:
+    get:
+      tags: [Change requests]
+      operationId: listChangeRequests
+      summary: Work list and search (NFR-UP01-U03)
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, HEAD_OF_COMPLIANCE, CREDIT_POLICY_MANAGER, CREDIT_APPROVER, FINANCE_EXECUTIVE, CO_LENDER_USER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - { name: view, in: query, schema: { type: string, enum: [AWAITING_MY_DECISION, MY_DRAFTS, MY_SUBMITTED, ALL], default: AWAITING_MY_DECISION } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { $ref: './common.yaml#/components/schemas/ChangeRequestType' } }
+        - { name: partnerId, in: query, schema: { type: string } }
+        - { name: overdue, in: query, schema: { type: boolean } }
+        - $ref: './common.yaml#/components/parameters/Limit'
+        - $ref: './common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Change requests, oldest due first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: './common.yaml#/components/schemas/ChangeRequest' } }
+                  nextCursor: { type: [string, 'null'] }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /change-requests/{changeRequestId}:
+    get:
+      tags: [Change requests]
+      operationId: getChangeRequest
+      summary: Get a change request with its steps and decisions
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, HEAD_OF_COMPLIANCE, CREDIT_POLICY_MANAGER, CREDIT_APPROVER, FINANCE_EXECUTIVE, CO_LENDER_USER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - { name: changeRequestId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Change request.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ChangeRequest' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /change-requests/{changeRequestId}/submission:
+    post:
+      tags: [Change requests]
+      operationId: submitChangeRequest
+      summary: Submit (or resubmit after return) for approval
+      description: |
+        Runs full validation; on success generates approval steps from the
+        approval matrix and assigns the first step. On failure returns 422 with
+        every violation (UC-01.01 A5).
+      x-roles: [PARTNER_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - { name: changeRequestId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment: { type: string }
+      responses:
+        '200':
+          description: Submitted; now IN_APPROVAL.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ChangeRequest' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /change-requests/{changeRequestId}/decisions:
+    post:
+      tags: [Change requests]
+      operationId: decideChangeRequest
+      summary: Approve, return or reject the current step
+      description: |
+        Server-side checks: the caller holds the step's role in the step's
+        tenant; the caller is not the maker and has not decided another step of
+        this request (X1). Return and reject need a comment. Approving the last
+        step applies the change atomically (ADR-0005 §4).
+      x-roles: [COMPLIANCE_OFFICER, HEAD_OF_COMPLIANCE, CREDIT_POLICY_MANAGER, CREDIT_APPROVER, FINANCE_EXECUTIVE, CO_LENDER_USER]
+      parameters:
+        - { name: changeRequestId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stepId, decision]
+              properties:
+                stepId: { type: string }
+                decision: { type: string, enum: [APPROVE, RETURN, REJECT] }
+                comment: { type: string }
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ChangeRequest' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+  /change-requests/{changeRequestId}/withdrawal:
+    post:
+      tags: [Change requests]
+      operationId: withdrawChangeRequest
+      summary: Withdraw a draft or returned change request
+      x-roles: [PARTNER_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - { name: changeRequestId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Withdrawn.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ChangeRequest' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /scheduled-changes:
+    get:
+      tags: [Change requests]
+      operationId: listScheduledChanges
+      summary: Calendar of approved changes not yet in force (NFR-UP01-CF07)
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, CREDIT_POLICY_MANAGER, FINANCE_EXECUTIVE, AUDITOR]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: Scheduled versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        aggregateType: { type: string }
+                        aggregateId: { type: string }
+                        version: { type: integer }
+                        effectiveFrom: { type: string, format: date-time }
+                        changeRequestId: { type: string }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [Change requests]
+      operationId: cancelScheduledChange
+      summary: Cancel a scheduled version before it takes effect
+      description: Creates a CANCEL_SCHEDULED_VERSION change request with the same approvers as the original.
+      x-roles: [PARTNER_MANAGER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [aggregateType, aggregateId, version, reason]
+              properties:
+                aggregateType: { type: string }
+                aggregateId: { type: string }
+                version: { type: integer }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Change request created.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/ChangeRequest' }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Readiness =======================
+  /partners/{partnerId}/readiness:
+    get:
+      tags: [Readiness]
+      operationId: getReadiness
+      summary: Go-live checklist (BR-01.01-06)
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+      responses:
+        '200':
+          description: Readiness.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/Readiness' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/readiness/attestations:
+    post:
+      tags: [Readiness]
+      operationId: attestReadinessCheck
+      summary: Manually attest a check whose owning module does not exist yet
+      description: Allowed for CONTRACT_TESTS_PASSED (Platform admin) and DISCLOSURE_PUBLISHED (Compliance) only.
+      x-roles: [PLATFORM_ADMIN, COMPLIANCE_OFFICER]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, evidence]
+              properties:
+                code: { type: string, enum: [CONTRACT_TESTS_PASSED, DISCLOSURE_PUBLISHED] }
+                evidence: { type: string, description: Link or reference to the test report or published page. }
+      responses:
+        '200':
+          description: Updated readiness. If every check now passes, the partner goes LIVE.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/Readiness' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+  # ======================= Reference data =======================
+  /reference-data/{category}:
+    get:
+      tags: [Reference data]
+      operationId: getReferenceData
+      summary: Get the version in force of a reference-data category
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, CREDIT_POLICY_MANAGER, FINANCE_EXECUTIVE, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [PARTNER_TYPES, DOCUMENT_CHECKLISTS, PRODUCTS, CHARGE_TYPES, REASON_CODES, APPROVAL_MATRIX, REGULATORY_PARAMETERS, INTEREST_RATE_POLICY]
+        - $ref: './common.yaml#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: Reference data version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReferenceDataVersion' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /reference-data/{category}/versions:
+    post:
+      tags: [Reference data]
+      operationId: createReferenceDataDraft
+      summary: Draft a change to a reference-data category
+      description: |
+        Goes through maker-checker like any other change. A change to
+        REGULATORY_PARAMETERS produces an impact report of every partner and
+        program it affects (NFR-UP01-R07), attached to the change request.
+      x-roles: [COMPLIANCE_OFFICER, CREDIT_POLICY_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - { name: category, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [effectiveFrom, entries]
+              properties:
+                effectiveFrom: { type: string, format: date-time }
+                entries: { type: array, items: { type: object, additionalProperties: true } }
+      responses:
+        '201':
+          description: Draft created.
+          content:
+            application/json:
+              schema: { $ref: './common.yaml#/components/schemas/DraftCreated' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Packages =======================
+  /config-packages/exports:
+    post:
+      tags: [Packages]
+      operationId: exportConfigPackage
+      summary: Export approved configuration as a signed package (ADR-0010)
+      description: Environment-specific values (credentials, endpoints, escrow accounts) are never included.
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [partnerIds]
+              properties:
+                partnerIds: { type: array, items: { type: string } }
+                includeReferenceData: { type: boolean, default: true }
+      responses:
+        '201':
+          description: Package created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfigPackage' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /config-packages/{packageId}/content:
+    get:
+      tags: [Packages]
+      operationId: downloadConfigPackage
+      summary: Download a package
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - { name: packageId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Signed package (JSON with detached JWS signature).
+          content:
+            application/vnd.npos.config-package+json:
+              schema: { type: object }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /config-packages/imports:
+    post:
+      tags: [Packages]
+      operationId: importConfigPackage
+      summary: Upload a package for a dry run and diff
+      description: Verifies signature and schema version, compares with this environment, and runs every invariant. Nothing is changed yet.
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/vnd.npos.config-package+json:
+            schema: { type: object }
+      responses:
+        '201':
+          description: Import prepared.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfigImport' }
+        '422': { $ref: './common.yaml#/components/responses/UnprocessableEntity' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /config-packages/imports/{importId}/application:
+    post:
+      tags: [Packages]
+      operationId: applyConfigImport
+      summary: Apply an import by creating change requests in this environment
+      description: Each changed aggregate becomes a change request; this environment's maker-checker still applies. Re-applying the same package changes nothing.
+      x-roles: [PLATFORM_ADMIN]
+      parameters:
+        - { name: importId, in: path, required: true, schema: { type: string } }
+        - $ref: './common.yaml#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Change requests created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changeRequestIds: { type: array, items: { type: string } }
+        '409': { $ref: './common.yaml#/components/responses/Conflict' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  # ======================= Audit =======================
+  /audit-records:
+    get:
+      tags: [Audit]
+      operationId: listAuditRecords
+      summary: Audit trail for any partner, program or setting (NFR-UP01-AU01)
+      x-roles: [COMPLIANCE_OFFICER, AUDITOR, PLATFORM_ADMIN]
+      parameters:
+        - { name: aggregateType, in: query, schema: { type: string } }
+        - { name: aggregateId, in: query, schema: { type: string } }
+        - { name: actor, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - $ref: './common.yaml#/components/parameters/Limit'
+        - $ref: './common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Audit records, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AuditRecord' } }
+                  nextCursor: { type: [string, 'null'] }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/timeline:
+    get:
+      tags: [Audit]
+      operationId: getPartnerTimeline
+      summary: Everything that happened to a partner, in one timeline (NFR-UP01-O04)
+      x-roles: [PARTNER_MANAGER, COMPLIANCE_OFFICER, AUDITOR, PLATFORM_ADMIN]
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/Limit'
+        - $ref: './common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Timeline entries, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AuditRecord' } }
+                  nextCursor: { type: [string, 'null'] }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+components:
+  securitySchemes:
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: https://idp.npos.example/realms/{tenant}/.well-known/openid-configuration
+  schemas:
+    Tenant:
+      type: object
+      properties:
+        id: { type: string, readOnly: true }
+        code: { type: string }
+        name: { type: string }
+        deploymentModel: { type: string, enum: [HOSTED, ON_PREMISE] }
+        homeLender:
+          type: object
+          properties:
+            legalName: { type: string }
+            pan: { type: string }
+            rbiCategory: { type: string }
+            certificateOfRegistration: { type: string }
+        status: { type: string, readOnly: true, enum: [PROVISIONING, ACTIVE, SUSPENDED] }
+        audit: { $ref: './common.yaml#/components/schemas/AuditInfo' }
+    TenantCreate:
+      type: object
+      required: [code, name, deploymentModel, homeLender]
+      properties:
+        code: { type: string, pattern: '^[A-Z0-9_]{2,20}$' }
+        name: { type: string }
+        deploymentModel: { type: string, enum: [HOSTED, ON_PREMISE] }
+        homeLender:
+          type: object
+          required: [legalName, pan]
+          properties:
+            legalName: { type: string }
+            pan: { type: string }
+            rbiCategory: { type: string }
+            certificateOfRegistration: { type: string }
+    TenantPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Tenant' } }
+        nextCursor: { type: [string, 'null'] }
+    PartnerPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: './common.yaml#/components/schemas/Partner' } }
+        nextCursor: { type: [string, 'null'] }
+    PartnerCreate:
+      type: object
+      required: [partnerType, legalName, pan]
+      properties:
+        partnerType: { $ref: './common.yaml#/components/schemas/PartnerType' }
+        legalName: { type: string }
+        pan: { type: string }
+        cin: { type: string }
+        llpin: { type: string }
+        gstin: { type: string }
+        rejectedPredecessorId: { type: string, description: Required when re-onboarding a rejected entity (BR-01.01-09). }
+    NewDraft:
+      type: object
+      description: Start a new draft. Without copyFromVersion, copies the version in force.
+      properties:
+        copyFromVersion: { type: integer, minimum: 1 }
+        purpose: { type: string, enum: [CHANGE, ROLLBACK], default: CHANGE, description: ROLLBACK creates a ROLLBACK change request. }
+    PartnerProfileDraftUpdate:
+      type: object
+      required: [content]
+      properties:
+        effectiveFrom: { type: string, format: date-time }
+        content: { $ref: './common.yaml#/components/schemas/PartnerProfileContent' }
+    ProgramCreate:
+      type: object
+      required: [name, businessModel, product, channel]
+      properties:
+        name: { type: string }
+        businessModel: { $ref: './common.yaml#/components/schemas/BusinessModel' }
+        product: { type: string }
+        channel: { $ref: './common.yaml#/components/schemas/Channel' }
+        cloneFrom:
+          type: object
+          required: [programId, version]
+          properties:
+            programId: { type: string }
+            version: { type: integer }
+    ProgramDraftUpdate:
+      type: object
+      required: [content]
+      properties:
+        effectiveFrom: { type: string, format: date-time }
+        effectiveTo: { type: [string, 'null'], format: date-time }
+        content: { $ref: './common.yaml#/components/schemas/ProgramContent' }
+    ArrangementCreate:
+      type: object
+      required: [originatingLender, coLender]
+      properties:
+        originatingLender: { $ref: './common.yaml#/components/schemas/LenderRef' }
+        coLender: { $ref: './common.yaml#/components/schemas/LenderRef' }
+        originatorPartnerId: { type: string }
+    ArrangementDraftUpdate:
+      type: object
+      required: [content]
+      properties:
+        effectiveFrom: { type: string, format: date-time }
+        content: { $ref: './common.yaml#/components/schemas/ArrangementContent' }
+    SuspensionOrderCreate:
+      type: object
+      required: [action, reasonCode, description, effective]
+      properties:
+        action: { type: string, enum: [SUSPEND, REINSTATE, OFFBOARD] }
+        scope:
+          type: object
+          description: Omit for the whole partner. Offboarding is always whole-partner.
+          properties:
+            scopeType: { type: string, enum: [PARTNER, PROGRAM, PRODUCT, CHANNEL] }
+            values: { type: array, items: { type: string } }
+        reasonCode: { type: string, enum: [RISK_BREACH, DLG_EXHAUSTED, FRAUD, REGULATORY_ACTION, CONTRACT_END, OTHER] }
+        description: { type: string }
+        effective:
+          type: object
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [IMMEDIATE, SCHEDULED] }
+            at: { type: string, format: date-time }
+        inFlightHandling: { type: string, enum: [COMPLETE_SANCTIONED, CANCEL_UNDISBURSED], description: Required for SUSPEND and OFFBOARD. }
+        emergency: { type: boolean, default: false, description: Compliance officer only (UC-01.07 A1). }
+    ReferenceDataVersion:
+      type: object
+      properties:
+        category: { type: string }
+        version: { type: integer }
+        effectiveFrom: { type: string, format: date-time }
+        entries: { type: array, items: { type: object, additionalProperties: true } }
+    ConfigPackage:
+      type: object
+      properties:
+        id: { type: string }
+        schemaVersion: { type: string, examples: ['1.0'] }
+        sourceInstallation: { type: string }
+        createdAt: { type: string, format: date-time }
+        createdBy: { type: string }
+        sha256: { type: string }
+        manifest:
+          type: array
+          items:
+            type: object
+            properties:
+              aggregateType: { type: string }
+              aggregateId: { type: string }
+              businessId: { type: string }
+              version: { type: integer }
+    ConfigImport:
+      type: object
+      properties:
+        id: { type: string }
+        packageSha256: { type: string }
+        signatureValid: { type: boolean }
+        status: { type: string, enum: [PREPARED, APPLIED, FAILED] }
+        diff:
+          type: array
+          items:
+            type: object
+            properties:
+              aggregateType: { type: string }
+              businessId: { type: string }
+              change: { type: string, enum: [NEW, CHANGED, UNCHANGED] }
+              details: { $ref: './common.yaml#/components/schemas/VersionDiff' }
+        validation: { $ref: './common.yaml#/components/schemas/ValidationResult' }
+        environmentBindingsMissing:
+          type: array
+          description: Values that must be set in this environment before go-live (credentials, escrow accounts, endpoints).
+          items: { type: string }
+    AuditRecord:
+      type: object
+      description: Append-only, hash-chained per aggregate (NFR-UP01-AU02).
+      properties:
+        id: { type: string }
+        at: { type: string, format: date-time }
+        actor: { type: string }
+        actorRole: { type: string }
+        sourceIp: { type: string }
+        action: { type: string, examples: [CREATED, UPDATED, SUBMITTED, APPROVED, RETURNED, REJECTED, ACTIVATED, SUSPENDED, REVOKED] }
+        aggregateType: { type: string }
+        aggregateId: { type: string }
+        version: { type: [integer, 'null'] }
+        changeRequestId: { type: [string, 'null'] }
+        before: { type: [object, 'null'] }
+        after: { type: [object, 'null'] }
+        comment: { type: [string, 'null'] }
+        previousHash: { type: string }
+        hash: { type: string }

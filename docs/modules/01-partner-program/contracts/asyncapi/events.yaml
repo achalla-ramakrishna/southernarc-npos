@@ -1,0 +1,444 @@
+asyncapi: 3.0.0
+info:
+  title: nPOS partner-config events
+  version: 1.0.0-draft
+  description: |
+    Events published by Module 1 (partner-config-service) through the
+    transactional outbox (ADR-0002) and consumed by every service that keeps a
+    local copy of configuration (ADR-0007).
+
+    **Snapshot topics** are compacted and keyed by aggregate ID. Every message
+    carries the aggregate's complete current state: status, the version in
+    force, and scheduled future versions. The domain event that caused the
+    message is in `trigger`. Reading a topic from the beginning always rebuilds
+    the full current configuration.
+
+    **The priority topic** carries small control messages (suspensions,
+    revocations) that consumers apply immediately, ahead of the snapshot that
+    follows on the snapshot topic.
+
+    Headers follow CloudEvents 1.0 Kafka binary mode (`ce_*`). Consumers must
+    be idempotent and ignore a message whose `revision` is lower than one
+    already applied for that key.
+  tags:
+    - name: module-1
+defaultContentType: application/json
+
+servers:
+  kafka:
+    host: kafka.npos.svc:9093
+    protocol: kafka-secure
+    description: Installation-local Kafka cluster (mTLS between services).
+
+channels:
+  tenantSnapshots:
+    address: npos.partner-config.tenant.v1
+    messages:
+      tenantSnapshot: { $ref: '#/components/messages/TenantSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  partnerSnapshots:
+    address: npos.partner-config.partner.v1
+    messages:
+      partnerSnapshot: { $ref: '#/components/messages/PartnerSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  programSnapshots:
+    address: npos.partner-config.program.v1
+    messages:
+      programSnapshot: { $ref: '#/components/messages/ProgramSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  arrangementSnapshots:
+    address: npos.partner-config.colending-arrangement.v1
+    messages:
+      arrangementSnapshot: { $ref: '#/components/messages/ArrangementSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  limitSetSnapshots:
+    address: npos.partner-config.limit-set.v1
+    messages:
+      limitSetSnapshot: { $ref: '#/components/messages/LimitSetSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  dlgSnapshots:
+    address: npos.partner-config.dlg-cover.v1
+    messages:
+      dlgSnapshot: { $ref: '#/components/messages/DlgSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  commercialSnapshots:
+    address: npos.partner-config.commercials.v1
+    messages:
+      commercialSnapshot: { $ref: '#/components/messages/CommercialSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  apiClientSnapshots:
+    address: npos.partner-config.api-client.v1
+    messages:
+      apiClientSnapshot: { $ref: '#/components/messages/ApiClientSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  regulatoryParameterSnapshots:
+    address: npos.partner-config.regulatory-parameter.v1
+    messages:
+      regulatoryParameterSnapshot: { $ref: '#/components/messages/RegulatoryParameterSnapshot' }
+    bindings: { $ref: '#/components/channelBindings/compacted' }
+  priorityControl:
+    address: npos.partner-config.priority.v1
+    description: Urgent control messages. Not compacted; 7-day retention. Consumers act within seconds (NFR-UP01-P10, A04).
+    messages:
+      priorityControl: { $ref: '#/components/messages/PriorityControl' }
+    bindings:
+      kafka:
+        partitions: 6
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 604800000
+        bindingVersion: '0.5.0'
+
+operations:
+  publishTenantSnapshot:
+    action: send
+    channel: { $ref: '#/channels/tenantSnapshots' }
+  publishPartnerSnapshot:
+    action: send
+    channel: { $ref: '#/channels/partnerSnapshots' }
+  publishProgramSnapshot:
+    action: send
+    channel: { $ref: '#/channels/programSnapshots' }
+  publishArrangementSnapshot:
+    action: send
+    channel: { $ref: '#/channels/arrangementSnapshots' }
+  publishLimitSetSnapshot:
+    action: send
+    channel: { $ref: '#/channels/limitSetSnapshots' }
+  publishDlgSnapshot:
+    action: send
+    channel: { $ref: '#/channels/dlgSnapshots' }
+  publishCommercialSnapshot:
+    action: send
+    channel: { $ref: '#/channels/commercialSnapshots' }
+  publishApiClientSnapshot:
+    action: send
+    channel: { $ref: '#/channels/apiClientSnapshots' }
+  publishRegulatoryParameterSnapshot:
+    action: send
+    channel: { $ref: '#/channels/regulatoryParameterSnapshots' }
+  publishPriorityControl:
+    action: send
+    channel: { $ref: '#/channels/priorityControl' }
+
+components:
+  channelBindings:
+    compacted:
+      kafka:
+        partitions: 12
+        topicConfiguration:
+          cleanup.policy: [compact]
+          min.compaction.lag.ms: 60000
+        bindingVersion: '0.5.0'
+
+  messageBindings:
+    keyedByAggregate:
+      kafka:
+        key:
+          type: string
+          description: Aggregate technical ID (UUIDv7). All messages for one aggregate land on one partition, in order.
+        bindingVersion: '0.5.0'
+    keyedByTenant:
+      kafka:
+        key:
+          type: string
+          description: Tenant ID.
+        bindingVersion: '0.5.0'
+
+  messageTraits:
+    cloudEvents:
+      headers:
+        type: object
+        required: [ce_specversion, ce_id, ce_source, ce_type, ce_time, ce_subject, ce_tenantid]
+        properties:
+          ce_specversion: { type: string, const: '1.0' }
+          ce_id: { type: string, description: Unique event ID (UUIDv7); consumers de-duplicate on it. }
+          ce_source: { type: string, description: 'Producer and installation, e.g. /npos/na-prod/partner-config.' }
+          ce_type: { type: string, description: 'Message type, e.g. com.npos.partnerconfig.program.snapshot.v1.' }
+          ce_time: { type: string, format: date-time }
+          ce_subject: { type: string, description: Aggregate ID (same as the Kafka key). }
+          ce_tenantid: { type: string }
+          ce_correlationid: { type: string, description: Links to the change request and trace. }
+          ce_dataschema: { type: string, format: uri, description: Schema Registry URI of the payload schema. }
+
+  messages:
+    TenantSnapshot:
+      name: TenantSnapshot
+      title: Tenant snapshot
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, tenant]
+            properties:
+              trigger: { type: string, enum: [TENANT_PROVISIONED, TENANT_UPDATED, TENANT_SUSPENDED] }
+              tenant:
+                type: object
+                properties:
+                  id: { type: string }
+                  code: { type: string }
+                  name: { type: string }
+                  deploymentModel: { type: string, enum: [HOSTED, ON_PREMISE] }
+                  status: { type: string, enum: [PROVISIONING, ACTIVE, SUSPENDED] }
+    PartnerSnapshot:
+      name: PartnerSnapshot
+      title: Partner snapshot
+      summary: Partner status, active profile, suspensions and programs.
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, partner]
+            properties:
+              trigger:
+                type: string
+                enum: [PARTNER_APPROVED, PARTNER_PROFILE_ACTIVATED, PARTNER_WENT_LIVE, PARTNER_SUSPENDED, PARTNER_REINSTATED, PARTNER_OFFBOARDING_STARTED, PARTNER_OFFBOARDED, DUE_DILIGENCE_EXPIRED]
+              partner: { $ref: '../openapi/common.yaml#/components/schemas/Partner' }
+              activeProfile:
+                description: Profile version in force. PII fields are omitted; consumers needing contacts call the read API.
+                oneOf:
+                  - $ref: '#/components/schemas/PublishedPartnerProfile'
+                  - type: 'null'
+              programIds: { type: array, items: { type: string } }
+    ProgramSnapshot:
+      name: ProgramSnapshot
+      title: Program snapshot
+      summary: The program, the version in force and any scheduled versions.
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, program, scheduledVersions]
+            properties:
+              trigger: { type: string, enum: [PROGRAM_VERSION_SCHEDULED, PROGRAM_VERSION_ACTIVATED, PROGRAM_SCHEDULE_CANCELLED, PROGRAM_RETIREMENT_SCHEDULED, PROGRAM_RETIRED] }
+              program: { $ref: '../openapi/common.yaml#/components/schemas/Program' }
+              activeVersion:
+                oneOf:
+                  - $ref: '#/components/schemas/PublishedProgramVersion'
+                  - type: 'null'
+              scheduledVersions:
+                type: array
+                description: Approved versions with a future effectiveFrom, ordered by effectiveFrom. Consumers switch to them locally at that time (ADR-0007 §3).
+                items: { $ref: '#/components/schemas/PublishedProgramVersion' }
+              retiresAt: { type: [string, 'null'], format: date-time }
+    ArrangementSnapshot:
+      name: ArrangementSnapshot
+      title: Co-lending arrangement snapshot
+      summary: Published to both lender parties' tenants' consumers.
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, arrangement, scheduledVersions]
+            properties:
+              trigger: { type: string, enum: [ARRANGEMENT_VERSION_SCHEDULED, ARRANGEMENT_VERSION_ACTIVATED, ARRANGEMENT_SCHEDULE_CANCELLED, ARRANGEMENT_SUSPENDED, ARRANGEMENT_REINSTATED, ARRANGEMENT_EXPIRED] }
+              arrangement: { $ref: '../openapi/common.yaml#/components/schemas/Arrangement' }
+              activeVersion:
+                oneOf:
+                  - $ref: '#/components/schemas/PublishedArrangementVersion'
+                  - type: 'null'
+              scheduledVersions:
+                type: array
+                items: { $ref: '#/components/schemas/PublishedArrangementVersion' }
+    LimitSetSnapshot:
+      name: LimitSetSnapshot
+      title: Limit set snapshot
+      summary: Limit definitions for Module 7 to enforce (ADR-0008).
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, limitSet, scheduledVersions]
+            properties:
+              trigger: { type: string, enum: [LIMIT_SET_VERSION_SCHEDULED, LIMIT_SET_VERSION_ACTIVATED, LIMIT_SET_SCHEDULE_CANCELLED] }
+              limitSet: { $ref: '../openapi/common.yaml#/components/schemas/LimitSet' }
+              activeVersion:
+                oneOf:
+                  - $ref: '#/components/schemas/PublishedLimitSetVersion'
+                  - type: 'null'
+              scheduledVersions:
+                type: array
+                items: { $ref: '#/components/schemas/PublishedLimitSetVersion' }
+    DlgSnapshot:
+      name: DlgSnapshot
+      title: DLG cover snapshot
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, dlgCoverId, partnerId]
+            properties:
+              trigger: { type: string, enum: [DLG_COVER_ACTIVATED, DLG_INSTRUMENT_EXPIRING_SOON, DLG_INSTRUMENT_EXPIRED, DLG_INSTRUMENT_RENEWED, DLG_TOP_UP_REQUIRED, DLG_TOPPED_UP, DLG_RELEASED] }
+              dlgCoverId: { type: string }
+              partnerId: { type: string }
+              versionId: { type: string }
+              version: { type: integer }
+              content: { $ref: '../openapi/common.yaml#/components/schemas/DlgCoverContent' }
+              instrumentStatus: { type: string, enum: [RECORDED, VERIFIED, NOT_VERIFIED, ACTIVE, EXPIRING_SOON, EXPIRED, TOP_UP_REQUIRED, RELEASED] }
+              blocksDisbursement: { type: boolean, description: True when the instrument has expired (BR-01.04-04). }
+    CommercialSnapshot:
+      name: CommercialSnapshot
+      title: Commercials snapshot
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, scheduleId, partnerId, scheduledVersions]
+            properties:
+              trigger: { type: string, enum: [COMMERCIAL_VERSION_SCHEDULED, COMMERCIAL_VERSION_ACTIVATED, COMMERCIAL_SCHEDULE_CANCELLED] }
+              scheduleId: { type: string }
+              partnerId: { type: string }
+              activeVersion:
+                oneOf:
+                  - $ref: '#/components/schemas/PublishedCommercialVersion'
+                  - type: 'null'
+              scheduledVersions:
+                type: array
+                items: { $ref: '#/components/schemas/PublishedCommercialVersion' }
+    ApiClientSnapshot:
+      name: ApiClientSnapshot
+      title: API client snapshot
+      summary: Credential metadata for the gateway and webhook service. Never contains secrets (ADR-0009).
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, apiClient]
+            properties:
+              trigger: { type: string, enum: [API_CLIENT_ISSUED, API_CLIENT_UPDATED, API_CLIENT_ROTATION_STARTED, API_CLIENT_ROTATION_COMPLETED, API_CLIENT_RESTRICTED, API_CLIENT_REINSTATED, API_CLIENT_REVOKED, API_CLIENT_EXPIRED] }
+              apiClient: { $ref: '../openapi/common.yaml#/components/schemas/ApiClient' }
+    RegulatoryParameterSnapshot:
+      name: RegulatoryParameterSnapshot
+      title: Regulatory parameter snapshot
+      summary: Central regulatory values (DLG cap, minimum retention, cooling-off minimum, rate policy).
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByAggregate' }
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/SnapshotEnvelope'
+          - type: object
+            required: [trigger, parameterCode, activeValue]
+            properties:
+              trigger: { type: string, enum: [REGULATORY_PARAMETER_SCHEDULED, REGULATORY_PARAMETER_CHANGED] }
+              parameterCode: { type: string, examples: [DLG_CAP_BPS, COLENDING_MIN_RETENTION_BPS, COOLING_OFF_MIN_DAYS] }
+              activeValue:
+                type: object
+                properties:
+                  value: {}
+                  effectiveFrom: { type: string, format: date-time }
+                  version: { type: integer }
+              scheduledValues:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    value: {}
+                    effectiveFrom: { type: string, format: date-time }
+                    version: { type: integer }
+    PriorityControl:
+      name: PriorityControl
+      title: Priority control message
+      summary: Act now; the full snapshot follows on the snapshot topic.
+      traits: [ { $ref: '#/components/messageTraits/cloudEvents' } ]
+      bindings: { $ref: '#/components/messageBindings/keyedByTenant' }
+      payload:
+        type: object
+        required: [controlId, action, tenantId, target, effectiveFrom]
+        properties:
+          controlId: { type: string }
+          action:
+            type: string
+            enum: [BLOCK_PARTNER, UNBLOCK_PARTNER, BLOCK_SCOPE, UNBLOCK_SCOPE, REVOKE_API_CLIENT, RESTRICT_API_CLIENT, UNRESTRICT_API_CLIENT, BLOCK_ARRANGEMENT, UNBLOCK_ARRANGEMENT, BLOCK_DISBURSEMENT_FOR_PROGRAMS]
+          tenantId: { type: string }
+          target:
+            type: object
+            required: [aggregateType, aggregateId]
+            properties:
+              aggregateType: { type: string, enum: [PARTNER, API_CLIENT, ARRANGEMENT, DLG_COVER] }
+              aggregateId: { type: string }
+              scope: { $ref: '../openapi/common.yaml#/components/schemas/SuspensionScope' }
+              programIds: { type: array, items: { type: string } }
+          effectiveFrom: { type: string, format: date-time }
+          reasonCode: { type: string }
+          emergency: { type: boolean }
+          changeRequestId: { type: [string, 'null'] }
+
+  schemas:
+    SnapshotEnvelope:
+      type: object
+      required: [schemaVersion, tenantId, aggregateId, revision, publishedAt]
+      properties:
+        schemaVersion: { type: string, const: '1' }
+        tenantId: { type: string }
+        aggregateId: { type: string }
+        revision:
+          type: integer
+          minimum: 1
+          description: Increases by one with every message for this aggregate. Consumers ignore messages with a lower revision than they hold.
+        publishedAt: { type: string, format: date-time }
+        partyTenantIds:
+          type: array
+          description: Other tenants allowed to see this aggregate (co-lender party, ADR-0003). Usually empty.
+          items: { type: string }
+        cause:
+          type: object
+          properties:
+            changeRequestId: { type: [string, 'null'] }
+            actor: { type: [string, 'null'], description: 'User ID, or SYSTEM for scheduled activations.' }
+    PublishedPartnerProfile:
+      type: object
+      description: Non-PII subset of the profile that runtime services need.
+      properties:
+        version: { type: integer }
+        versionId: { type: string }
+        effectiveFrom: { type: string, format: date-time }
+        legalName: { type: string }
+        tradeName: { type: string }
+        businessModels: { type: array, items: { $ref: '../openapi/common.yaml#/components/schemas/BusinessModel' } }
+        channels: { type: array, items: { $ref: '../openapi/common.yaml#/components/schemas/Channel' } }
+        isLendingServiceProvider: { type: boolean }
+        rbiRegulated: { type: boolean }
+    PublishedProgramVersion:
+      allOf:
+        - $ref: '../openapi/common.yaml#/components/schemas/ProgramVersion'
+        - type: object
+          required: [versionId]
+          properties:
+            versionId: { type: string, description: Stable ID consumers record on each application. }
+    PublishedArrangementVersion:
+      allOf:
+        - $ref: '../openapi/common.yaml#/components/schemas/ArrangementVersion'
+        - type: object
+          required: [versionId]
+          properties:
+            versionId: { type: string }
+    PublishedLimitSetVersion:
+      allOf:
+        - $ref: '../openapi/common.yaml#/components/schemas/LimitSetVersion'
+        - type: object
+          required: [versionId]
+          properties:
+            versionId: { type: string }
+    PublishedCommercialVersion:
+      allOf:
+        - $ref: '../openapi/common.yaml#/components/schemas/CommercialVersion'
+        - type: object
+          required: [versionId]
+          properties:
+            versionId: { type: string }

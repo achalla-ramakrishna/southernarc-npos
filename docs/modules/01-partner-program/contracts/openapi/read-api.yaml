@@ -1,0 +1,329 @@
+openapi: 3.1.0
+info:
+  title: nPOS partner-config read API
+  version: 1.0.0-draft
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: |
+    Read-only API used by other nPOS services.
+
+    **Not for the per-application hot path.** Services keep a local copy of
+    configuration from the Kafka topics (ADR-0007) and use this API only to:
+    - fill their local copy on first start, or recover it,
+    - fetch an older version a loan refers to (`…-versions/{versionId}`),
+    - answer point-in-time questions (`asOf`) for audit and support.
+
+    Callers authenticate with OAuth 2.0 client credentials and need the
+    `partner-config.read` scope. The tenant comes from the token; platform
+    services acting for several tenants pass the tenant as a token claim set
+    by Keycloak token exchange, never as a free header.
+servers:
+  - url: https://{host}/internal/partner-config/v1
+    variables:
+      host: { default: partner-config.npos.svc }
+security:
+  - serviceToken: [partner-config.read]
+tags:
+  - { name: Partners, description: Partner status and snapshots }
+  - { name: Programs, description: Program versions in force or by ID }
+  - { name: Co-lending, description: Arrangement versions in force or by ID }
+  - { name: Limits and DLG, description: Limit and DLG definitions in force }
+  - { name: Commercials, description: Commercials in force or by ID }
+  - { name: Snapshots, description: Bulk load for rebuilding a local copy }
+
+paths:
+  /partners/{partnerId}/status:
+    get:
+      tags: [Partners]
+      operationId: getPartnerStatus
+      summary: Can this partner originate now, and for which programs?
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: Partner status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PartnerStatusView' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/snapshot:
+    get:
+      tags: [Partners]
+      operationId: getPartnerSnapshot
+      summary: Partner configuration in force (same shape as the partner topic message)
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: Partner snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PartnerSnapshot' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /programs/{programId}/effective-version:
+    get:
+      tags: [Programs]
+      operationId: getEffectiveProgramVersion
+      summary: Program version in force at a moment (BR-01.02-05)
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ProgramId'
+        - $ref: './common.yaml#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: The version in force, with its stable versionId.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolvedProgramVersion' }
+        '404':
+          description: Program unknown, or no version in force at that moment.
+          content:
+            application/problem+json:
+              schema: { $ref: './common.yaml#/components/schemas/Problem' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /program-versions/{versionId}:
+    get:
+      tags: [Programs]
+      operationId: getProgramVersionById
+      summary: A specific program version, by the versionId a loan recorded
+      parameters:
+        - { name: versionId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Program version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolvedProgramVersion' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /colending-arrangements/{arrangementId}/effective-version:
+    get:
+      tags: [Co-lending]
+      operationId: getEffectiveArrangementVersion
+      summary: Arrangement version in force at a moment (BR-01.03-04)
+      parameters:
+        - $ref: './common.yaml#/components/parameters/ArrangementId'
+        - $ref: './common.yaml#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: The version in force.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolvedArrangementVersion' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /arrangement-versions/{versionId}:
+    get:
+      tags: [Co-lending]
+      operationId: getArrangementVersionById
+      summary: A specific arrangement version, by versionId
+      parameters:
+        - { name: versionId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Arrangement version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolvedArrangementVersion' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/limits:
+    get:
+      tags: [Limits and DLG]
+      operationId: getEffectiveLimits
+      summary: Limit definitions and DLG status in force (definitions only; utilisation is in Module 7)
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: Limits and DLG.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LimitsView' }
+        '404': { $ref: './common.yaml#/components/responses/NotFound' }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /limit-set-versions/{versionId}:
+    get:
+      tags: [Limits and DLG]
+      operationId: getLimitSetVersionById
+      summary: A specific limit set version, by versionId
+      parameters:
+        - { name: versionId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Limit set version.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './common.yaml#/components/schemas/LimitSetVersion'
+                  - type: object
+                    properties:
+                      versionId: { type: string }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /partners/{partnerId}/commercials:
+    get:
+      tags: [Commercials]
+      operationId: getEffectiveCommercials
+      summary: Commercials in force for a partner (BR-01.06-03)
+      parameters:
+        - $ref: './common.yaml#/components/parameters/PartnerId'
+        - $ref: './common.yaml#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: Commercial versions in force (one per schedule).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: './common.yaml#/components/schemas/CommercialVersion'
+                        - type: object
+                          properties:
+                            versionId: { type: string }
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /commercial-versions/{versionId}:
+    get:
+      tags: [Commercials]
+      operationId: getCommercialVersionById
+      summary: A specific commercials version, by versionId
+      parameters:
+        - { name: versionId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Commercials version.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './common.yaml#/components/schemas/CommercialVersion'
+                  - type: object
+                    properties:
+                      versionId: { type: string }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+  /snapshots/{aggregateType}:
+    get:
+      tags: [Snapshots]
+      operationId: listSnapshots
+      summary: Page through current snapshots to rebuild a local copy
+      description: |
+        Normally a consumer rebuilds from the compacted topic. This endpoint is
+        the fallback (for example in an installation where a topic was lost).
+        Returns the same payload shapes as the topic messages, ordered by
+        aggregate ID.
+      parameters:
+        - name: aggregateType
+          in: path
+          required: true
+          schema: { type: string, enum: [partners, programs, colending-arrangements, limit-sets, dlg-covers, commercial-schedules, api-clients, regulatory-parameters] }
+        - { name: changedSince, in: query, schema: { type: string, format: date-time } }
+        - $ref: './common.yaml#/components/parameters/Limit'
+        - $ref: './common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Snapshots.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { type: object, description: Snapshot payload as defined in asyncapi/events.yaml. } }
+                  nextCursor: { type: [string, 'null'] }
+
+        '401': { $ref: './common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './common.yaml#/components/responses/Forbidden' }
+components:
+  securitySchemes:
+    serviceToken:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://idp.npos.example/realms/platform/protocol/openid-connect/token
+          scopes:
+            partner-config.read: Read partner configuration
+  schemas:
+    PartnerStatusView:
+      type: object
+      required: [partnerId, status, canOriginate]
+      properties:
+        partnerId: { type: string }
+        partnerCode: { type: string }
+        status: { $ref: './common.yaml#/components/schemas/PartnerStatus' }
+        canOriginate: { type: boolean, description: True only when LIVE and not suspended for the whole partner. }
+        suspensions: { type: array, items: { $ref: './common.yaml#/components/schemas/SuspensionScope' } }
+        liveProgramIds: { type: array, items: { type: string }, description: Programs open for new applications now. }
+        asOf: { type: string, format: date-time }
+    PartnerSnapshot:
+      type: object
+      description: Same shape as the payload on the partner topic.
+      properties:
+        partner: { $ref: './common.yaml#/components/schemas/Partner' }
+        activeProfile:
+          oneOf:
+            - $ref: './common.yaml#/components/schemas/PartnerProfileVersion'
+            - type: 'null'
+        programIds: { type: array, items: { type: string } }
+        asOf: { type: string, format: date-time }
+    ResolvedProgramVersion:
+      allOf:
+        - $ref: './common.yaml#/components/schemas/ProgramVersion'
+        - type: object
+          required: [versionId, program]
+          properties:
+            versionId: { type: string, description: Stable ID of this version; the application stores it (NFR-UP01-AU03). }
+            program: { $ref: './common.yaml#/components/schemas/Program' }
+    ResolvedArrangementVersion:
+      allOf:
+        - $ref: './common.yaml#/components/schemas/ArrangementVersion'
+        - type: object
+          required: [versionId, arrangement]
+          properties:
+            versionId: { type: string }
+            arrangement: { $ref: './common.yaml#/components/schemas/Arrangement' }
+    LimitsView:
+      type: object
+      properties:
+        partnerId: { type: string }
+        limitSet:
+          oneOf:
+            - allOf:
+                - $ref: './common.yaml#/components/schemas/LimitSetVersion'
+                - type: object
+                  properties:
+                    versionId: { type: string }
+            - type: 'null'
+        dlg:
+          type: array
+          items:
+            type: object
+            properties:
+              dlgCoverId: { type: string }
+              versionId: { type: string }
+              content: { $ref: './common.yaml#/components/schemas/DlgCoverContent' }
+              instrumentStatus: { type: string, enum: [RECORDED, VERIFIED, NOT_VERIFIED, ACTIVE, EXPIRING_SOON, EXPIRED, TOP_UP_REQUIRED, RELEASED] }
+              blocksDisbursement: { type: boolean, description: True when the instrument has expired (BR-01.04-04). }
+        asOf: { type: string, format: date-time }

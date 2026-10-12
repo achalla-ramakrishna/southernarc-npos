@@ -1,0 +1,832 @@
+openapi: 3.1.0
+info:
+  title: nPOS partner-config shared components
+  version: 1.0.0-draft
+  description: |
+    Schemas, parameters and responses shared by the Module 1 admin and read APIs.
+    Conventions (money in paise, rates in basis points, RFC 9457 errors) are
+    described in ../README.md.
+paths: {}
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client-chosen UUID. Repeats within 24 hours return the original response.
+      schema: { type: string, format: uuid }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: ETag of the draft being updated (optimistic concurrency).
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from a previous page's nextCursor.
+      schema: { type: string }
+    AsOf:
+      name: asOf
+      in: query
+      required: false
+      description: Return the configuration in force at this instant (NFR-UP01-AU04). Defaults to now.
+      schema: { type: string, format: date-time }
+    PartnerId:
+      name: partnerId
+      in: path
+      required: true
+      description: Partner technical ID (UUIDv7) or business ID (PTR-nnnnnn).
+      schema: { type: string }
+    ProgramId:
+      name: programId
+      in: path
+      required: true
+      schema: { type: string }
+    ArrangementId:
+      name: arrangementId
+      in: path
+      required: true
+      schema: { type: string }
+    Version:
+      name: version
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+
+  headers:
+    ETag:
+      description: Version tag of the returned draft; send it back in If-Match.
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Not authenticated.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Role or tenant not allowed for this operation.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Not found in the caller's tenant.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: Conflicts with the current state (wrong status, duplicate, idempotency key reused).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionFailed:
+      description: The If-Match ETag is stale; reload the draft.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnprocessableEntity:
+      description: One or more business rules are violated. Each violation names its rule.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ServiceUnavailable:
+      description: A dependency is unavailable. Safe to retry with the same Idempotency-Key.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    # ---------- primitives ----------
+    Money:
+      type: object
+      required: [amountPaise]
+      properties:
+        amountPaise: { type: integer, format: int64, minimum: 0, description: Amount in paise (₹1 = 100). }
+    BasisPoints:
+      type: integer
+      minimum: 0
+      maximum: 100000
+      description: 1 bp = 0.01%. 1850 = 18.50%.
+    RuleSetRef:
+      type: object
+      description: Reference to a published rule-set version in Module 2.
+      required: [ruleSetId, version]
+      properties:
+        ruleSetId: { type: string }
+        version: { type: integer, minimum: 1 }
+    DocumentRef:
+      type: object
+      description: Reference to a document held in the document service (DMS). Module 1 never stores the bytes.
+      required: [documentId, documentType]
+      properties:
+        documentId: { type: string }
+        documentType: { type: string, description: 'Code from the document checklist reference data, e.g. BOARD_RESOLUTION.' }
+        fileName: { type: string }
+        version: { type: integer }
+        sha256: { type: string }
+        uploadedBy: { type: string, readOnly: true }
+        uploadedAt: { type: string, format: date-time, readOnly: true }
+    Address:
+      type: object
+      required: [line1, city, state, pinCode]
+      properties:
+        line1: { type: string }
+        line2: { type: string }
+        city: { type: string }
+        state: { type: string, description: 'ISO 3166-2:IN code, e.g. IN-KA.' }
+        pinCode: { type: string, pattern: '^[1-9][0-9]{5}$' }
+    Contact:
+      type: object
+      required: [name, phone, email]
+      properties:
+        name: { type: string }
+        designation: { type: string }
+        phone: { type: string, description: 'E.164, masked for roles without PII access (NFR-UP01-D01).' }
+        email: { type: string, format: email }
+    AuditInfo:
+      type: object
+      readOnly: true
+      properties:
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedBy: { type: string }
+        updatedAt: { type: string, format: date-time }
+
+    # ---------- enums ----------
+    PartnerType:
+      type: string
+      enum: [NBFC, BANK, FINTECH_LSP, MFI, BUSINESS_CORRESPONDENT, MERCHANT_MARKETPLACE, PAYMENT_ORCHESTRATOR, DEALER]
+    BusinessModel:
+      type: string
+      enum: [PARTNERSHIP_LENDING, CO_LENDING, BUSINESS_CORRESPONDENT, DIRECT_ASSIGNMENT_SELLER]
+    Channel:
+      type: string
+      enum: [API, FILE, PORTAL]
+    PartnerStatus:
+      type: string
+      enum: [DRAFT, PENDING_APPROVAL, RETURNED, REJECTED, APPROVED_NOT_LIVE, LIVE, SUSPENDED, OFFBOARDING_RUN_OFF, OFFBOARDED, CLOSED]
+    VersionStatus:
+      type: string
+      description: |
+        Shared version lifecycle (domain model §4.2). PENDING_VERIFICATION,
+        SUSPENDED and EXPIRED apply to co-lending arrangements only.
+      enum: [DRAFT, PENDING_APPROVAL, RETURNED, REJECTED, SCHEDULED, ACTIVE, SUPERSEDED, RETIRED, CANCELLED, PENDING_VERIFICATION, SUSPENDED, EXPIRED]
+    RiskRating:
+      type: string
+      enum: [LOW, MEDIUM, HIGH]
+    Environment:
+      type: string
+      enum: [SANDBOX, PRODUCTION]
+
+    # ---------- versions (shared metadata) ----------
+    VersionMeta:
+      type: object
+      required: [version, status]
+      properties:
+        version: { type: integer, minimum: 1, readOnly: true }
+        status: { $ref: '#/components/schemas/VersionStatus' }
+        effectiveFrom: { type: string, format: date-time, description: Required before submission. }
+        effectiveTo: { type: [string, 'null'], format: date-time }
+        changeRequestId: { type: string, readOnly: true }
+        copiedFromVersion: { type: [integer, 'null'], readOnly: true, description: Set when cloned or rolled back. }
+        approvedAt: { type: [string, 'null'], format: date-time, readOnly: true }
+        audit: { $ref: '#/components/schemas/AuditInfo' }
+
+    # ---------- partner ----------
+    PartnerProfileContent:
+      type: object
+      description: Terms captured in UC-01.01 (data elements §8). Versioned.
+      properties:
+        legal:
+          type: object
+          properties:
+            legalName: { type: string }
+            tradeName: { type: string }
+            constitution: { type: string, enum: [COMPANY, LLP, PARTNERSHIP, PROPRIETORSHIP, SOCIETY, TRUST] }
+            cin: { type: string, pattern: '^[LU][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6}$' }
+            llpin: { type: string, pattern: '^[A-Z]{3}-[0-9]{4}$' }
+            pan: { type: string, pattern: '^[A-Z]{5}[0-9]{4}[A-Z]$' }
+            gstin: { type: string, pattern: '^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$' }
+            dateOfIncorporation: { type: string, format: date }
+            registeredAddress: { $ref: '#/components/schemas/Address' }
+            correspondenceAddress: { $ref: '#/components/schemas/Address' }
+            website: { type: string, format: uri }
+        contacts:
+          type: object
+          properties:
+            business: { $ref: '#/components/schemas/Contact' }
+            technical: { $ref: '#/components/schemas/Contact' }
+            grievanceOfficer: { $ref: '#/components/schemas/Contact' }
+            nodalOfficer: { $ref: '#/components/schemas/Contact' }
+            escalation: { $ref: '#/components/schemas/Contact' }
+        regulatory:
+          type: object
+          properties:
+            rbiRegulated: { type: boolean }
+            certificateOfRegistration: { type: string }
+            rbiCategory: { type: string }
+            isLendingServiceProvider: { type: boolean }
+            digitalLendingApps:
+              type: array
+              items:
+                type: object
+                required: [name, url]
+                properties:
+                  name: { type: string }
+                  url: { type: string, format: uri }
+            dataStorageLocation: { type: string, enum: [INDIA, OUTSIDE_INDIA] }
+        scope:
+          type: object
+          properties:
+            businessModels: { type: array, items: { $ref: '#/components/schemas/BusinessModel' } }
+            intendedProducts: { type: array, items: { type: string, description: Product code from the product master. } }
+            channels: { type: array, items: { $ref: '#/components/schemas/Channel' } }
+            expectedMonthlyVolume: { type: integer, minimum: 0 }
+        dueDiligence:
+          type: object
+          properties:
+            riskRating: { $ref: '#/components/schemas/RiskRating' }
+            findings: { type: string }
+            mitigations: { type: string }
+            screeningResult: { type: string, enum: [CLEAR, MATCH_CLEARED, MATCH_OPEN] }
+            assessments:
+              type: array
+              items:
+                type: object
+                required: [assessmentType, completedOn, expiresOn]
+                properties:
+                  assessmentType: { type: string, description: 'e.g. INFOSEC, FINANCIAL, KYC_ENTITY.' }
+                  completedOn: { type: string, format: date }
+                  expiresOn: { type: string, format: date }
+        agreement:
+          type: object
+          properties:
+            document: { $ref: '#/components/schemas/DocumentRef' }
+            effectiveDate: { type: string, format: date }
+            termMonths: { type: integer, minimum: 1 }
+            autoRenewal: { type: boolean }
+            terminationNoticeDays: { type: integer, minimum: 0 }
+            hasDlgClause: { type: boolean }
+            hasDataSharingClause: { type: boolean }
+            hasOutsourcingClause: { type: boolean }
+        documents:
+          type: array
+          items: { $ref: '#/components/schemas/DocumentRef' }
+    PartnerProfileVersion:
+      allOf:
+        - $ref: '#/components/schemas/VersionMeta'
+        - type: object
+          required: [content]
+          properties:
+            partnerId: { type: string, readOnly: true }
+            content: { $ref: '#/components/schemas/PartnerProfileContent' }
+    SuspensionScope:
+      type: object
+      required: [scopeType, reasonCode, effectiveFrom]
+      properties:
+        scopeType: { type: string, enum: [PARTNER, PROGRAM, PRODUCT, CHANNEL] }
+        values:
+          type: array
+          description: Program IDs, product codes or channels. Empty when scopeType is PARTNER.
+          items: { type: string }
+        reasonCode: { type: string, enum: [RISK_BREACH, DLG_EXHAUSTED, FRAUD, REGULATORY_ACTION, CONTRACT_END, OTHER] }
+        effectiveFrom: { type: string, format: date-time }
+        suspensionOrderId: { type: string, readOnly: true }
+    Partner:
+      type: object
+      required: [id, tenantId, partnerType, status]
+      properties:
+        id: { type: string, readOnly: true }
+        partnerCode: { type: [string, 'null'], readOnly: true, description: 'PTR-nnnnnn, assigned on approval.' }
+        tenantId: { type: string, readOnly: true }
+        partnerType: { $ref: '#/components/schemas/PartnerType' }
+        displayName: { type: string, readOnly: true }
+        status: { $ref: '#/components/schemas/PartnerStatus' }
+        riskRating: { $ref: '#/components/schemas/RiskRating' }
+        activeProfileVersion: { type: [integer, 'null'], readOnly: true }
+        latestProfileVersion: { type: integer, readOnly: true }
+        activeSuspensions:
+          type: array
+          readOnly: true
+          items: { $ref: '#/components/schemas/SuspensionScope' }
+        rejectedPredecessorId: { type: [string, 'null'], description: Set when re-onboarding after a rejection (BR-01.01-09). }
+        audit: { $ref: '#/components/schemas/AuditInfo' }
+
+    # ---------- program ----------
+    ProgramContent:
+      type: object
+      description: Terms captured in UC-01.02 (data elements §8). Versioned.
+      properties:
+        loanParameters:
+          type: object
+          properties:
+            amountMin: { $ref: '#/components/schemas/Money' }
+            amountMax: { $ref: '#/components/schemas/Money' }
+            tenureMonths: { type: array, items: { type: integer, minimum: 1 }, description: Allowed tenures. }
+            repaymentFrequency: { type: string, enum: [MONTHLY, FORTNIGHTLY, WEEKLY, BULLET] }
+            secured: { type: boolean }
+        pricing:
+          type: object
+          properties:
+            rateType: { type: string, enum: [FIXED, FLOATING] }
+            rateBandMinBps: { $ref: '#/components/schemas/BasisPoints' }
+            rateBandMaxBps: { $ref: '#/components/schemas/BasisPoints' }
+            riskGradePricing:
+              type: array
+              items:
+                type: object
+                required: [riskGrade, rateBps]
+                properties:
+                  riskGrade: { type: string }
+                  rateBps: { $ref: '#/components/schemas/BasisPoints' }
+            subventionAllowed: { type: boolean }
+        charges:
+          type: array
+          items:
+            type: object
+            required: [chargeType, basis, gstApplicable, kfsLine]
+            properties:
+              chargeType: { type: string, description: 'Code from the charge-type reference data, e.g. PROCESSING_FEE, BOUNCE.' }
+              basis: { type: string, enum: [FLAT, PERCENT_OF_LOAN_AMOUNT, PERCENT_OF_OVERDUE] }
+              amount: { $ref: '#/components/schemas/Money' }
+              rateBps: { $ref: '#/components/schemas/BasisPoints' }
+              gstApplicable: { type: boolean }
+              kfsLine: { type: string, description: KFS line this charge appears on (BR-01.02-02). }
+        journey:
+          type: object
+          properties:
+            journeyTemplateRef: { type: string, description: Journey template in Module 4. }
+            kycMethods: { type: array, items: { type: string, enum: [CKYC, AADHAAR_OKYC, AADHAAR_EKYC, VIDEO_KYC] } }
+            accountAggregator: { type: boolean }
+            eSign: { type: boolean }
+            eStamp: { type: boolean }
+            mandateType: { type: string, enum: [E_NACH, UPI_AUTOPAY, NONE] }
+            disbursementMode: { type: string, enum: [BORROWER_ACCOUNT, MERCHANT_SETTLEMENT] }
+            insuranceProducts: { type: array, items: { type: string } }
+        documents: { type: array, items: { type: string, description: Document code from the document master. } }
+        templates:
+          type: object
+          properties:
+            kfsTemplateRef: { type: string }
+            agreementTemplateRef: { type: string }
+            notificationTemplateSetRef: { type: string }
+            languages: { type: array, items: { type: string, description: 'ISO 639-1, e.g. en, hi, ta.' } }
+            coolingOffDays: { type: integer, minimum: 0 }
+        links:
+          type: object
+          properties:
+            ruleSet: { $ref: '#/components/schemas/RuleSetRef' }
+            arrangementId: { type: [string, 'null'] }
+            limitSetId: { type: [string, 'null'] }
+            dlgCoverId: { type: [string, 'null'] }
+        policyException:
+          type: object
+          properties:
+            flagged: { type: boolean, description: Adds a Credit approver step (UC-01.02 A3). }
+            reason: { type: string }
+    ProgramVersion:
+      allOf:
+        - $ref: '#/components/schemas/VersionMeta'
+        - type: object
+          required: [content]
+          properties:
+            programId: { type: string, readOnly: true }
+            content: { $ref: '#/components/schemas/ProgramContent' }
+    Program:
+      type: object
+      required: [id, partnerId, name, businessModel, product, channel]
+      properties:
+        id: { type: string, readOnly: true }
+        programCode: { type: string, readOnly: true, description: PRG-nnnnnn }
+        partnerId: { type: string }
+        name: { type: string, description: Unique within the partner. }
+        businessModel: { $ref: '#/components/schemas/BusinessModel' }
+        product: { type: string, description: Product code from the product master. }
+        channel: { $ref: '#/components/schemas/Channel' }
+        retired: { type: boolean, readOnly: true }
+        activeVersion: { type: [integer, 'null'], readOnly: true }
+        scheduledVersions: { type: array, readOnly: true, items: { type: integer } }
+        latestVersion: { type: integer, readOnly: true }
+        audit: { $ref: '#/components/schemas/AuditInfo' }
+
+    # ---------- co-lending ----------
+    LenderRef:
+      type: object
+      required: [kind, id]
+      properties:
+        kind: { type: string, enum: [TENANT, PARTNER], description: TENANT = a tenant's home lender; PARTNER = a regulated lender onboarded as a partner. }
+        id: { type: string }
+    ArrangementContent:
+      type: object
+      description: Terms captured in UC-01.03 (data elements §8). Versioned.
+      properties:
+        agreement:
+          type: object
+          properties:
+            document: { $ref: '#/components/schemas/DocumentRef' }
+            effectiveDate: { type: string, format: date }
+            termMonths: { type: integer, minimum: 1 }
+        productsCovered: { type: array, items: { type: string } }
+        originationModel: { type: string, enum: [JOINT_REAL_TIME, CO_LENDER_REVIEW] }
+        reviewWindowDays: { type: [integer, 'null'], minimum: 1 }
+        shares:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: object
+            required: [role, shareBps, minimumRetentionBps, interestRateBps]
+            properties:
+              role: { type: string, enum: [ORIGINATING_LENDER, CO_LENDER] }
+              shareBps: { $ref: '#/components/schemas/BasisPoints' }
+              minimumRetentionBps: { $ref: '#/components/schemas/BasisPoints' }
+              interestRateBps: { $ref: '#/components/schemas/BasisPoints' }
+        blendedRateMethod: { type: string, enum: [SHARE_WEIGHTED_AVERAGE], default: SHARE_WEIGHTED_AVERAGE }
+        feeSharing:
+          type: array
+          items:
+            type: object
+            required: [chargeType, originatingLenderBps]
+            properties:
+              chargeType: { type: string }
+              originatingLenderBps: { $ref: '#/components/schemas/BasisPoints', description: Share kept by the originating lender; the rest goes to the co-lender. }
+        policies:
+          type: object
+          properties:
+            originatingLenderRuleSet: { $ref: '#/components/schemas/RuleSetRef' }
+            coLenderRuleSet: { $ref: '#/components/schemas/RuleSetRef' }
+            coLenderChecksInOwnSystem: { type: boolean }
+        limits:
+          type: object
+          properties:
+            totalLimit: { $ref: '#/components/schemas/Money' }
+            dailyCap: { $ref: '#/components/schemas/Money' }
+            monthlyCap: { $ref: '#/components/schemas/Money' }
+        escrow:
+          type: object
+          properties:
+            accountNumber: { type: string, description: Masked in responses for roles without finance access. }
+            ifsc: { type: string, pattern: '^[A-Z]{4}0[A-Z0-9]{6}$' }
+            bankName: { type: string }
+        apportionment:
+          type: object
+          properties:
+            rule: { type: string, enum: [PRO_RATA, DEFINED_ORDER] }
+            order: { type: array, items: { type: string, enum: [CHARGES, INTEREST, PRINCIPAL] } }
+        coLenderCodes:
+          type: object
+          properties:
+            productCode: { type: string }
+            branchCode: { type: string }
+            glCodes: { type: object, additionalProperties: { type: string } }
+    ArrangementVersion:
+      allOf:
+        - $ref: '#/components/schemas/VersionMeta'
+        - type: object
+          required: [content]
+          properties:
+            arrangementId: { type: string, readOnly: true }
+            content: { $ref: '#/components/schemas/ArrangementContent' }
+            verification:
+              type: object
+              readOnly: true
+              properties:
+                escrowConfirmed: { type: boolean }
+                coreSystemAcknowledged: { type: boolean }
+                lastAttemptAt: { type: [string, 'null'], format: date-time }
+    Arrangement:
+      type: object
+      required: [id, originatingLender, coLender]
+      properties:
+        id: { type: string, readOnly: true }
+        arrangementCode: { type: string, readOnly: true, description: CLA-nnnnnn }
+        ownerTenantId: { type: string, readOnly: true }
+        originatingLender: { $ref: '#/components/schemas/LenderRef' }
+        coLender: { $ref: '#/components/schemas/LenderRef' }
+        originatorPartnerId: { type: [string, 'null'] }
+        status: { $ref: '#/components/schemas/VersionStatus' }
+        activeVersion: { type: [integer, 'null'], readOnly: true }
+        scheduledVersions: { type: array, readOnly: true, items: { type: integer } }
+        latestVersion: { type: integer, readOnly: true }
+        audit: { $ref: '#/components/schemas/AuditInfo' }
+
+    # ---------- limits and DLG ----------
+    LimitSetContent:
+      type: object
+      description: Exposure limit definitions (UC-01.04). Utilisation lives in Module 7 (ADR-0008).
+      properties:
+        overallLimit: { $ref: '#/components/schemas/Money' }
+        programLimits:
+          type: array
+          items:
+            type: object
+            required: [programId, limit]
+            properties:
+              programId: { type: string }
+              limit: { $ref: '#/components/schemas/Money' }
+        dailyDisbursementCap: { $ref: '#/components/schemas/Money' }
+        monthlyDisbursementCap: { $ref: '#/components/schemas/Money' }
+        perBorrowerMax: { $ref: '#/components/schemas/Money' }
+        alertThresholdsBps: { type: array, items: { $ref: '#/components/schemas/BasisPoints' }, examples: [[8000, 9000]] }
+        temporaryCaps:
+          type: array
+          items:
+            type: object
+            required: [dailyDisbursementCap, startsAt, endsAt]
+            properties:
+              dailyDisbursementCap: { $ref: '#/components/schemas/Money' }
+              startsAt: { type: string, format: date-time }
+              endsAt: { type: string, format: date-time, description: Mandatory (BR-01.04-05). }
+              reason: { type: string }
+    LimitSetVersion:
+      allOf:
+        - $ref: '#/components/schemas/VersionMeta'
+        - type: object
+          required: [content]
+          properties:
+            limitSetId: { type: string, readOnly: true }
+            content: { $ref: '#/components/schemas/LimitSetContent' }
+    LimitSet:
+      type: object
+      properties:
+        id: { type: string, readOnly: true }
+        limitSetCode: { type: string, readOnly: true, description: LST-nnnnnn }
+        partnerId: { type: string, readOnly: true }
+        activeVersion: { type: [integer, 'null'], readOnly: true }
+        scheduledVersions: { type: array, readOnly: true, items: { type: integer } }
+        latestVersion: { type: integer, readOnly: true }
+    DlgForm:
+      type: string
+      enum: [CASH_DEPOSIT, FIXED_DEPOSIT_WITH_LIEN, BANK_GUARANTEE]
+    DlgCoverContent:
+      type: object
+      properties:
+        form: { $ref: '#/components/schemas/DlgForm' }
+        amount: { $ref: '#/components/schemas/Money' }
+        portfolioPercentBps: { $ref: '#/components/schemas/BasisPoints' }
+        coveredProgramIds: { type: array, items: { type: string } }
+        disbursementPeriodFrom: { type: string, format: date }
+        disbursementPeriodTo: { type: string, format: date }
+        validFrom: { type: string, format: date }
+        validTo: { type: string, format: date }
+        invocationTriggerDpd: { type: integer, minimum: 1 }
+        invocationTimelineDays: { type: integer, minimum: 1 }
+        topUpRule: { type: string }
+    DlgCoverVersion:
+      allOf:
+        - $ref: '#/components/schemas/VersionMeta'
+        - type: object
+          required: [content]
+          properties:
+            dlgCoverId: { type: string, readOnly: true }
+            content: { $ref: '#/components/schemas/DlgCoverContent' }
+    DlgInstrument:
+      type: object
+      properties:
+        id: { type: string, readOnly: true }
+        dlgCoverId: { type: string, readOnly: true }
+        form: { $ref: '#/components/schemas/DlgForm' }
+        referenceNumber: { type: string, description: 'Deposit account, FD number or BG number.' }
+        issuingBank: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        expiryDate: { type: [string, 'null'], format: date }
+        lienStatus: { type: [string, 'null'], enum: [MARKED, NOT_MARKED, null] }
+        evidence: { $ref: '#/components/schemas/DocumentRef' }
+        status:
+          type: string
+          readOnly: true
+          enum: [RECORDED, VERIFIED, NOT_VERIFIED, ACTIVE, EXPIRING_SOON, EXPIRED, TOP_UP_REQUIRED, RELEASED]
+
+    # ---------- commercials ----------
+    CommercialContent:
+      type: object
+      description: Partner commercials (UC-01.06). Versioned.
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [itemType, direction, basis, programIds, agreementClause]
+            properties:
+              itemType: { type: string, enum: [SOURCING_FEE, SERVICING_FEE, SUBVENTION_RECEIVABLE, PROCESSING_FEE_SHARE, OTHER] }
+              direction: { type: string, enum: [PAYABLE_TO_PARTNER, RECEIVABLE_FROM_PARTNER, RECEIVABLE_FROM_BRAND] }
+              basis: { type: string, enum: [PERCENT_OF_DISBURSED, PERCENT_OF_COLLECTIONS, FLAT_PER_LOAN] }
+              rateBps: { $ref: '#/components/schemas/BasisPoints' }
+              amount: { $ref: '#/components/schemas/Money' }
+              programIds: { type: array, items: { type: string } }
+              agreementClause: { type: string, description: Clause the fee traces to (BR-01.06-02). }
+        clawbacks:
+          type: array
+          items:
+            type: object
+            required: [trigger, percentBps]
+            properties:
+              trigger: { type: string, enum: [COOLING_OFF_CANCELLATION, DEFAULT_WITHIN_PERIOD, FRAUD] }
+              periodMonths: { type: integer, minimum: 1 }
+              percentBps: { $ref: '#/components/schemas/BasisPoints' }
+        tax:
+          type: object
+          properties:
+            gstApplicable: { type: boolean }
+            gstRateBps: { $ref: '#/components/schemas/BasisPoints' }
+            tdsSection: { type: string }
+            tdsRateBps: { $ref: '#/components/schemas/BasisPoints' }
+        settlement:
+          type: object
+          properties:
+            frequency: { type: string, enum: [WEEKLY, FORTNIGHTLY, MONTHLY], default: MONTHLY }
+            invoicingMethod: { type: string, enum: [PARTNER_INVOICE, SELF_BILLING] }
+            paymentTermsDays: { type: integer, minimum: 0 }
+        erp:
+          type: object
+          readOnly: true
+          properties:
+            vendorCode: { type: string }
+            customerCode: { type: string }
+    CommercialVersion:
+      allOf:
+        - $ref: '#/components/schemas/VersionMeta'
+        - type: object
+          required: [content]
+          properties:
+            scheduleId: { type: string, readOnly: true }
+            content: { $ref: '#/components/schemas/CommercialContent' }
+
+    # ---------- credentials ----------
+    ApiClient:
+      type: object
+      description: Credential metadata only. Secrets are never stored or returned here (ADR-0009).
+      properties:
+        id: { type: string, readOnly: true }
+        partnerId: { type: string, readOnly: true }
+        environment: { $ref: '#/components/schemas/Environment' }
+        clientId: { type: [string, 'null'], readOnly: true }
+        status:
+          type: string
+          readOnly: true
+          enum: [REQUESTED, AWAITING_PARTNER_DETAILS, ACTIVE, ROTATING, RESTRICTED, REVOKED, EXPIRED]
+        scopes: { type: array, items: { type: string } }
+        rateLimits:
+          type: object
+          properties:
+            perSecond: { type: integer, minimum: 1 }
+            perDay: { type: integer, minimum: 1 }
+        certificate:
+          type: object
+          readOnly: true
+          properties:
+            fingerprintSha256: { type: string }
+            expiresAt: { type: string, format: date-time }
+        ipAllowList: { type: array, items: { type: string, description: IPv4/IPv6 address or CIDR. } }
+        webhook:
+          type: object
+          properties:
+            url: { type: string, format: uri, pattern: '^https://' }
+            signingKeyId: { type: string, readOnly: true }
+            verification: { type: string, readOnly: true, enum: [VERIFIED, UNVERIFIED] }
+        secretExpiresAt: { type: [string, 'null'], format: date-time, readOnly: true }
+        audit: { $ref: '#/components/schemas/AuditInfo' }
+
+    # ---------- change requests ----------
+    ChangeRequestType:
+      type: string
+      enum:
+        - ONBOARD_PARTNER
+        - UPDATE_PARTNER_PROFILE
+        - PROGRAM_VERSION
+        - RETIRE_PROGRAM
+        - ARRANGEMENT_VERSION
+        - SUSPEND_ARRANGEMENT
+        - REINSTATE_ARRANGEMENT
+        - LIMIT_SET_VERSION
+        - DLG_COVER_VERSION
+        - COMMERCIAL_VERSION
+        - SUSPEND_PARTNER
+        - REINSTATE_PARTNER
+        - OFFBOARD_PARTNER
+        - ROLLBACK
+        - CANCEL_SCHEDULED_VERSION
+        - REFERENCE_DATA_VERSION
+        - REGULATORY_PARAMETER_VERSION
+    ApprovalStep:
+      type: object
+      properties:
+        stepId: { type: string }
+        sequence: { type: integer }
+        role: { type: string, description: 'e.g. COMPLIANCE_OFFICER, HEAD_OF_COMPLIANCE, CREDIT_POLICY_MANAGER, FINANCE_EXECUTIVE, CO_LENDER_USER.' }
+        tenantId: { type: string, description: Tenant whose user must decide (differs for co-lender steps). }
+        status: { type: string, enum: [WAITING, PENDING, APPROVED, RETURNED, REJECTED] }
+        decidedBy: { type: [string, 'null'] }
+        decidedAt: { type: [string, 'null'], format: date-time }
+        comment: { type: [string, 'null'] }
+    ChangeRequest:
+      type: object
+      properties:
+        id: { type: string, readOnly: true }
+        crCode: { type: string, readOnly: true, description: CR-nnnnnn }
+        type: { $ref: '#/components/schemas/ChangeRequestType' }
+        target:
+          type: object
+          properties:
+            aggregateType: { type: string, enum: [PARTNER, PROGRAM, ARRANGEMENT, LIMIT_SET, DLG_COVER, COMMERCIAL_SCHEDULE, REFERENCE_DATA, REGULATORY_PARAMETER] }
+            aggregateId: { type: string }
+            version: { type: [integer, 'null'] }
+        status:
+          type: string
+          enum: [DRAFT, SUBMITTED, IN_APPROVAL, RETURNED, APPROVED, REJECTED, WITHDRAWN, APPLIED, APPLY_FAILED]
+        emergency: { type: boolean, description: Applied before approval (UC-01.07 A1). }
+        summary: { type: string, description: One-line description shown in work lists. }
+        makerUserId: { type: string, readOnly: true }
+        submittedAt: { type: [string, 'null'], format: date-time }
+        dueBy: { type: [string, 'null'], format: date-time, description: Approval SLA (NFR-UP01-O03). }
+        steps: { type: array, items: { $ref: '#/components/schemas/ApprovalStep' } }
+        currentStepId: { type: [string, 'null'] }
+        audit: { $ref: '#/components/schemas/AuditInfo' }
+    DraftCreated:
+      type: object
+      description: Returned when a draft version is created. The draft is owned by a change request in DRAFT.
+      required: [aggregateId, version, changeRequestId]
+      properties:
+        aggregateId: { type: string }
+        version: { type: integer }
+        changeRequestId: { type: string }
+
+    # ---------- validation, readiness, diff ----------
+    Violation:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, description: Error code from the error catalogue. }
+        rule: { type: [string, 'null'], description: 'Business rule ID, e.g. BR-01.03-01.' }
+        field: { type: [string, 'null'], description: 'JSON Pointer to the offending field, e.g. /content/shares/1/shareBps.' }
+        message: { type: string, description: What is wrong and how to fix it (NFR-UP01-U06). }
+    ValidationResult:
+      type: object
+      required: [valid, violations]
+      properties:
+        valid: { type: boolean }
+        violations: { type: array, items: { $ref: '#/components/schemas/Violation' } }
+        warnings: { type: array, items: { $ref: '#/components/schemas/Violation' } }
+        samples:
+          type: object
+          description: Program validation only (UC-01.02 step 11).
+          properties:
+            sampleKfsDocumentId: { type: string }
+            sampleScheduleDocumentId: { type: string }
+    ReadinessCheck:
+      type: object
+      properties:
+        code: { type: string, enum: [PARTNER_APPROVED, PROGRAM_APPROVED_WITH_RULE_SET, DLG_AND_LIMITS_ACTIVE, COLENDING_ARRANGEMENT_ACTIVE, PRODUCTION_CREDENTIALS_ISSUED, CONTRACT_TESTS_PASSED, DISCLOSURE_PUBLISHED, DUE_DILIGENCE_VALID] }
+        status: { type: string, enum: [PASSED, PENDING, FAILED, NOT_APPLICABLE] }
+        source: { type: string, enum: [SYSTEM, EVENT, ATTESTATION] }
+        detail: { type: string }
+        attestedBy: { type: [string, 'null'] }
+        attestedAt: { type: [string, 'null'], format: date-time }
+    Readiness:
+      type: object
+      properties:
+        partnerId: { type: string }
+        ready: { type: boolean }
+        checks: { type: array, items: { $ref: '#/components/schemas/ReadinessCheck' } }
+    VersionDiff:
+      type: object
+      description: Field-level comparison of two versions (NFR-UP01-U02).
+      properties:
+        fromVersion: { type: integer }
+        toVersion: { type: integer }
+        changes:
+          type: array
+          items:
+            type: object
+            required: [path, op]
+            properties:
+              path: { type: string, description: JSON Pointer. }
+              op: { type: string, enum: [ADDED, REMOVED, CHANGED] }
+              from: {}
+              to: {}
+
+    # ---------- errors ----------
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details with nPOS extensions.
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, examples: ['https://errors.npos.example/partner-config/COLENDING_RETENTION_BELOW_MINIMUM'] }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string, description: Error code from the error catalogue. }
+        rule: { type: [string, 'null'], description: Business rule ID when one rule is violated. }
+        violations: { type: array, items: { $ref: '#/components/schemas/Violation' } }
+        correlationId: { type: string, description: Same as the trace ID; quote it to support. }
