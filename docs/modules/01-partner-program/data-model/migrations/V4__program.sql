@@ -1,0 +1,75 @@
+-- Product programs (UC-01.02) and their versions.
+
+CREATE TABLE program (
+    id                BINARY(16)   NOT NULL,
+    tenant_id         BINARY(16)   NOT NULL,
+    partner_id        BINARY(16)   NOT NULL,
+    program_code      VARCHAR(16)  NULL,       -- PRG-nnnnnn, assigned on first approval
+    name              VARCHAR(200) NOT NULL,
+    business_model    VARCHAR(32)  NOT NULL,
+    product_code      VARCHAR(40)  NOT NULL,
+    channel           VARCHAR(8)   NOT NULL,
+    active_version    INT          NULL,
+    latest_version    INT          NOT NULL,
+    retires_at        DATETIME(6)  NULL,
+    retired_at        DATETIME(6)  NULL,
+    snapshot_revision BIGINT       NOT NULL DEFAULT 0,
+    row_version       INT          NOT NULL DEFAULT 0,
+    created_by        VARCHAR(64)  NOT NULL,
+    created_at        DATETIME(6)  NOT NULL,
+    updated_by        VARCHAR(64)  NOT NULL,
+    updated_at        DATETIME(6)  NOT NULL,
+    CONSTRAINT pk_program PRIMARY KEY (id),
+    CONSTRAINT uk_program_code UNIQUE (program_code),
+    CONSTRAINT uk_program_tenant_id UNIQUE (tenant_id, id),
+    CONSTRAINT uk_program_name UNIQUE (tenant_id, partner_id, name),
+    CONSTRAINT fk_program_partner FOREIGN KEY (tenant_id, partner_id) REFERENCES partner (tenant_id, id),
+    CONSTRAINT ck_program_business_model CHECK (business_model IN (
+        'PARTNERSHIP_LENDING', 'CO_LENDING', 'BUSINESS_CORRESPONDENT', 'DIRECT_ASSIGNMENT_SELLER')),
+    CONSTRAINT ck_program_channel CHECK (channel IN ('API', 'FILE', 'PORTAL')),
+    INDEX ix_program_partner (tenant_id, partner_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+CREATE TABLE program_version (
+    id                     BINARY(16)  NOT NULL,
+    tenant_id              BINARY(16)  NOT NULL,
+    program_id             BINARY(16)  NOT NULL,
+    version                INT         NOT NULL,
+    status                 VARCHAR(24) NOT NULL,
+    effective_from         DATETIME(6) NULL,
+    effective_to           DATETIME(6) NULL,
+    content                JSON        NOT NULL,
+    content_schema_version SMALLINT    NOT NULL DEFAULT 1,
+    change_request_id      BINARY(16)  NOT NULL,
+    copied_from_version_id BINARY(16)  NULL,       -- may point at another program's version (clone)
+    approved_at            DATETIME(6) NULL,
+    row_version            INT         NOT NULL DEFAULT 0,
+    created_by             VARCHAR(64) NOT NULL,
+    created_at             DATETIME(6) NOT NULL,
+    updated_by             VARCHAR(64) NOT NULL,
+    updated_at             DATETIME(6) NOT NULL,
+    -- Extracted for cross-aggregate queries (ADR-0012): rule-set usage, impact of arrangement/limit/DLG changes.
+    rule_set_id            VARCHAR(64) GENERATED ALWAYS AS (content->>'$.links.ruleSet.ruleSetId') STORED,
+    rule_set_version       INT         GENERATED ALWAYS AS (CAST(content->>'$.links.ruleSet.version' AS UNSIGNED)) STORED,
+    arrangement_ref        VARCHAR(36) GENERATED ALWAYS AS (content->>'$.links.arrangementId') STORED,
+    limit_set_ref          VARCHAR(36) GENERATED ALWAYS AS (content->>'$.links.limitSetId') STORED,
+    dlg_cover_ref          VARCHAR(36) GENERATED ALWAYS AS (content->>'$.links.dlgCoverId') STORED,
+    policy_exception       BOOLEAN     GENERATED ALWAYS AS (COALESCE(content->'$.policyException.flagged' = TRUE, FALSE)) STORED,
+    active_parent_id       BINARY(16)  GENERATED ALWAYS AS (CASE WHEN status = 'ACTIVE' THEN program_id END) STORED,
+    CONSTRAINT pk_program_version PRIMARY KEY (id),
+    CONSTRAINT uk_program_version UNIQUE (program_id, version),
+    CONSTRAINT uk_program_version_active UNIQUE (active_parent_id),
+    CONSTRAINT fk_program_version_program FOREIGN KEY (tenant_id, program_id) REFERENCES program (tenant_id, id),
+    CONSTRAINT fk_program_version_cr FOREIGN KEY (tenant_id, change_request_id) REFERENCES change_request (tenant_id, id),
+    CONSTRAINT fk_program_version_copied FOREIGN KEY (copied_from_version_id) REFERENCES program_version (id),
+    CONSTRAINT ck_program_version_status CHECK (status IN (
+        'DRAFT', 'PENDING_APPROVAL', 'RETURNED', 'REJECTED', 'SCHEDULED', 'ACTIVE', 'SUPERSEDED', 'RETIRED', 'CANCELLED')),
+    CONSTRAINT ck_program_version_period CHECK (effective_to IS NULL OR effective_to > effective_from),
+    CONSTRAINT ck_program_version_content CHECK (JSON_TYPE(content) = 'OBJECT'),
+    INDEX ix_program_version_due (status, effective_from),
+    INDEX ix_program_version_rule_set (tenant_id, rule_set_id, rule_set_version),
+    INDEX ix_program_version_arrangement (tenant_id, arrangement_ref),
+    INDEX ix_program_version_limit_set (tenant_id, limit_set_ref),
+    INDEX ix_program_version_dlg (tenant_id, dlg_cover_ref),
+    INDEX ix_program_version_cr (change_request_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
